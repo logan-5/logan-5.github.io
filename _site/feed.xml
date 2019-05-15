@@ -1,0 +1,608 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="3.8.5">Jekyll</generator><link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" /><link href="http://localhost:4000/" rel="alternate" type="text/html" /><updated>2019-05-14T20:51:31-07:00</updated><id>http://localhost:4000/feed.xml</id><title type="html">Your awesome title</title><subtitle>Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description.</subtitle><entry><title type="html">A Zero-Overhead RAII Wrapper, Part II: Optimization</title><link href="http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-ii-optimization.html" rel="alternate" type="text/html" title="
+				A Zero-Overhead RAII Wrapper, Part II: Optimization		" /><published>2019-01-20T22:46:09-08:00</published><updated>2019-01-20T22:46:09-08:00</updated><id>http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-ii-optimization</id><content type="html" xml:base="http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-ii-optimization.html">&lt;p&gt;In the last part, we implemented a very simple stack-based RAII wrapper for an OpenGL buffer object. The code was simple enough, clean, and easy to use, but we paid the price of a tiny amount of space overhead required for storing a deleter along with the buffer’s handle, which is a price we didn’t have to pay in the handwritten version of the code. This overhead came from the fact that empty structs have a size of one byte in C++, and by storing the deleter along with the handle naively in a flat structure, this extra byte affected the total size of our RAII wrapper. We’ll spend this part Doing Something About That.&lt;/p&gt;
+
+&lt;h4 id=&quot;a-short-disclaimer&quot;&gt;A Short Disclaimer&lt;/h4&gt;
+
+&lt;p&gt;We are literally talking about one byte here. The following is a dive into a rabbit hole, for the joy and academic thrill of discovery, for the fun of learning something new and maybe brushing up on our template metaprogramming skills. I do not claim that optimizing away one byte is a good use of substantial amounts of your personal time, or your company’s time, if it’s not something you are interested in for its own sake.&lt;/p&gt;
+
+&lt;p&gt;Alright, on with the geeking.&lt;/p&gt;
+
+&lt;h2 id=&quot;optimization&quot;&gt;Optimization&lt;/h2&gt;
+
+&lt;p&gt;As it happens, implementations of &lt;code class=&quot;highlighter-rouge&quot;&gt;std::unique_ptr&lt;/code&gt; are faced with this same problem: the &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; instance has to carry around an instance of a (possibly/probably empty) user-provided deleter, or else the standard &lt;code class=&quot;highlighter-rouge&quot;&gt;std::default_delete&lt;/code&gt;, which is also an empty struct, and thus has nonzero size. Their cause for fixing this nonzero-size problem is perhaps somewhat better motivated than our little use case. The standards committee is thoroughly concerned with moving C++ in a direction of simpler, safer, and better code, and &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; (among other smart pointers) is one of the most exciting newer tools for attaining that. However, &lt;code class=&quot;highlighter-rouge&quot;&gt;std::unique_ptr&lt;/code&gt; is up against the Goliath of &lt;em&gt;decades&lt;/em&gt; of programmers using owning raw pointers. In order to be a competitive, viable option that can be recommended wholeheartedly and unequivocally for all single-owner dynamically-allocated objects in every new C++ program, present and future, there simply has to be a way to implement it in a way that suffers &lt;em&gt;zero&lt;/em&gt; overhead over the equivalent raw pointer.&lt;/p&gt;
+
+&lt;p&gt;And, you guessed it, there is.&lt;/p&gt;
+
+&lt;p&gt;In order to shave off that extra byte of overhead we introduced by having to cart around an instance of our empty deleter struct, we’re going to use a tool that many &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; implementations also use internally called a &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt;. A &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt; is fundamentally similar to a &lt;code class=&quot;highlighter-rouge&quot;&gt;std::pair&lt;/code&gt;, in that it models two objects bundled together, but it takes advantage of a very common compiler optimization to store empty structs without using any extra space.&lt;/p&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt; isn’t provided by the standard library (though many standard library implementations have one they use internally). If your project uses Boost, go ahead and whip out &lt;code class=&quot;highlighter-rouge&quot;&gt;boost::compressed_pair&lt;/code&gt; and you’re done; you can skip the rest of this section. Your standard library may also implement &lt;code class=&quot;highlighter-rouge&quot;&gt;std::tuple&lt;/code&gt; using the “compressed” technique; if so, use that, and you too can be excused. For the rest of us less fortunate (or those who want to learn), we’re going to bang out a simple, bare-bones &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt; that will eliminate the overhead of the deleter in our RAII wrapper.&lt;/p&gt;
+
+&lt;p&gt;The optimization that powers &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt; is known as the &lt;em&gt;Empty Base Optimization&lt;/em&gt;, and it is deliberately allowed by the C++ standard, and even required in certain circumstances. &lt;a href=&quot;https://en.cppreference.com/w/cpp/language/ebo&quot;&gt;cppreference&lt;/a&gt; describes it better and more succinctly than I could: the empty base optimization “[a]llows the size of an empty base subobject to be zero.” We can see it in action here:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct A {};
+static_assert(sizeof(A) == 1, &quot;&quot;);
+struct B : A { int i; };
+static_assert(sizeof(B) == sizeof(int), &quot;your compiler is broken!&quot;);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Notice how, even though the size of &lt;code class=&quot;highlighter-rouge&quot;&gt;A&lt;/code&gt; is normally 1, when it is used as a base class of &lt;code class=&quot;highlighter-rouge&quot;&gt;B&lt;/code&gt;, that 1 byte disappears and the total size of &lt;code class=&quot;highlighter-rouge&quot;&gt;B&lt;/code&gt; is simply the size of its &lt;code class=&quot;highlighter-rouge&quot;&gt;int&lt;/code&gt; member. We can use this little interesting behavior to our advantage when writing our &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt;. If we instantiate a &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt;, for example, we’ll just store &lt;code class=&quot;highlighter-rouge&quot;&gt;int&lt;/code&gt;s as members as normal, but if one (or both) of the types given is an empty struct, we’ll &lt;em&gt;inherit&lt;/em&gt; from it instead.&lt;/p&gt;
+
+&lt;p&gt;The following bits of code use some template metaprogramming tricks that are beyond the scope of this post to explain in detail, but I’ll try to keep the results simple enough to read.&lt;/p&gt;
+
+&lt;h2 id=&quot;wrapt-bool&quot;&gt;wrap&amp;lt;T, bool&amp;gt;&lt;/h2&gt;
+
+&lt;p&gt;Let’s start by modeling those two fundamental pieces: sometimes we want to have a given type as a member, other times we want to inherit from it. We’ll write a little helper that encapsulates this piece of the problem, and then we’ll use it to build up the rest of the solution later.&lt;/p&gt;
+
+&lt;p&gt;I want a single template that represents wrapping an object. It should take a type &lt;code class=&quot;highlighter-rouge&quot;&gt;T&lt;/code&gt; and a &lt;code class=&quot;highlighter-rouge&quot;&gt;bool&lt;/code&gt;. When I pass &lt;code class=&quot;highlighter-rouge&quot;&gt;false&lt;/code&gt; for the bool, I want it to have the object as a member. When I pass &lt;code class=&quot;highlighter-rouge&quot;&gt;true&lt;/code&gt;, I want it to inherit from the object. I like calling this template &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&lt;/code&gt; because that’s all it does (this little wrapper can also be reused for other purposes, like &lt;a href=&quot;http://noisecode.net/blog/2019/01/20/stop-using-bare-strings/&quot;&gt;wrapping up your naked strings&lt;/a&gt;). I’ll get us started:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;#include &amp;lt;type_traits&amp;gt;
+
+template&amp;lt;typename T, bool Inherit&amp;gt;
+struct wrap {
+    T&amp;amp; get() noexcept { return t; }
+    const T&amp;amp; get() const noexcept { return t; }
+    T t;
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This is the so-called &lt;em&gt;primary template&lt;/em&gt;, which, as you can see, models the case where the object is a member. We also provide two overloads of a method called &lt;code class=&quot;highlighter-rouge&quot;&gt;get()&lt;/code&gt;, which provide a uniform interface for retrieving the object inside a &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&lt;/code&gt; which might need to be &lt;code class=&quot;highlighter-rouge&quot;&gt;get&lt;/code&gt;ted in different ways depending on the &lt;code class=&quot;highlighter-rouge&quot;&gt;Inherit&lt;/code&gt; bool.&lt;/p&gt;
+
+&lt;p&gt;Here’s the second version, a partial specialization of the primary template, where we inherit from &lt;code class=&quot;highlighter-rouge&quot;&gt;T&lt;/code&gt; instead if the bool was given as &lt;code class=&quot;highlighter-rouge&quot;&gt;true&lt;/code&gt;:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;template&amp;lt;typename T&amp;gt;
+struct wrap&amp;lt;T, true&amp;gt; : T {
+    static_assert(std::is_class&amp;lt;T&amp;gt;::value &amp;amp;&amp;amp; !std::is_final&amp;lt;T&amp;gt;::value,
+                  &quot;can't inherit from type given to wrap&amp;lt;T, true&amp;gt;&quot;);
+    T&amp;amp; get() noexcept { return *this; }
+    const T&amp;amp; get() const noexcept { return *this; }
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This version, as you can see, requires that &lt;code class=&quot;highlighter-rouge&quot;&gt;T&lt;/code&gt; be a non-final class, since that’s the only way we can inherit from it. (The &lt;code class=&quot;highlighter-rouge&quot;&gt;static_assert&lt;/code&gt; is just for the user-friendly error message–you’ll get an arcane error either way if you try to use the template with a non-class, or a with final class.) Its &lt;code class=&quot;highlighter-rouge&quot;&gt;get()&lt;/code&gt; methods, curiously but reasonably, return a reference to itself, since by inheriting from a &lt;code class=&quot;highlighter-rouge&quot;&gt;T&lt;/code&gt;, it &lt;em&gt;is&lt;/em&gt; a &lt;code class=&quot;highlighter-rouge&quot;&gt;T&lt;/code&gt;.&lt;/p&gt;
+
+&lt;p&gt;We can test that it’s working by instantiating it with some different types:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;wrap&amp;lt;int, false&amp;gt; w0{5};
+// wrap&amp;lt;int, true&amp;gt; w1{5}; // error: can't inherit from int
+wrap&amp;lt;DeleteBuffer, false&amp;gt; w2; // DeleteBuffer as member
+wrap&amp;lt;DeleteBuffer, true&amp;gt; w3; // DeleteBuffer as base class
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;What about this &lt;code class=&quot;highlighter-rouge&quot;&gt;bool&lt;/code&gt; business? We’re not going to be able to pass in literal &lt;code class=&quot;highlighter-rouge&quot;&gt;true&lt;/code&gt; or &lt;code class=&quot;highlighter-rouge&quot;&gt;false&lt;/code&gt; when it comes time to use this in our &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt;–we’ll need to intelligently pick the one to use based on the nature of the types given to us. For this, we need a &lt;em&gt;metafunction&lt;/em&gt;: a “function” that takes a type as a parameter and returns us another type as a result. (If the idea of a metafunction is new to you, take a deep breath, drink in the splendor of the wild world of C++ template metaprogramming on the horizon in front of you, and then immediately stop and watch &lt;a href=&quot;https://www.youtube.com/watch?v=Am2is2QCvxY&quot;&gt;this incredible talk&lt;/a&gt;).&lt;/p&gt;
+
+&lt;p&gt;Here’s a metafunction that “returns” whether or not a given type is eligible for taking advantage of the empty base optimization (abbreviated “ebo”). Thankfully, the standard type traits library already provides all the important pieces, we just have to stick them together:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;template &amp;lt;typename T&amp;gt;
+struct can_ebo
+    : std::integral_constant&amp;lt;bool,
+                             std::is_empty&amp;lt;T&amp;gt;::value &amp;amp;&amp;amp;
+                                 !std::is_final&amp;lt;T&amp;gt;::value&amp;gt; {};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;I won’t explain everything metaprogramming-y going on here, but the important part is that we check whether the type is empty (which also implicitly checks if it’s a class, since non-classes can’t be empty), and whether it’s final… alas, it’s true, some poor sod could declare their empty class &lt;code class=&quot;highlighter-rouge&quot;&gt;final&lt;/code&gt;, for some unsearchable reason, and render all of our ingenious EBO optimization non-applicable.&lt;/p&gt;
+
+&lt;p&gt;(Note: if you’re using C++17, you can just do &lt;code class=&quot;highlighter-rouge&quot;&gt;std::is_empty_v&amp;lt;T&amp;gt;&lt;/code&gt; above, and likewise for the other. Some platforms still have some catching up to do before this is possible… like mine.)&lt;/p&gt;
+
+&lt;p&gt;All that’s left is to put this all together. We know how to switch between inheriting from something and having it as a member; and we know how to tell if we’ll benefit from the empty base optimization. Let’s take a stab at combining it all into a simple &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt;.&lt;/p&gt;
+
+&lt;h2 id=&quot;compressed_pair&quot;&gt;compressed_pair&lt;/h2&gt;
+
+&lt;p&gt;Our &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt; template is basically going to take two template parameters, for the first and second types, hand those two types off to two instantiations of &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&lt;/code&gt;, and then inherit from both of them. We’re also going to provide a way to access the two things within the pair, using the base &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&lt;/code&gt;s’ &lt;code class=&quot;highlighter-rouge&quot;&gt;get()&lt;/code&gt; methods:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;template&amp;lt;typename First, typename Second&amp;gt;
+struct compressed_pair
+    : wrap&amp;lt;First, can_ebo&amp;lt;First&amp;gt;::value&amp;gt;
+    , wrap&amp;lt;Second, can_ebo&amp;lt;Second&amp;gt;::value&amp;gt; {
+private:
+    using first_base = wrap&amp;lt;First, can_ebo&amp;lt;First&amp;gt;::value&amp;gt;;
+    using second_base = wrap&amp;lt;Second, can_ebo&amp;lt;Second&amp;gt;::value&amp;gt;;
+public:
+    First&amp;amp; first() noexcept { return first_base::get(); }
+    const First&amp;amp; first() const noexcept { return first_base::get(); }
+    Second&amp;amp; second() noexcept { return second_base::get(); }
+    const Second&amp;amp; second() const noexcept { return second_base::get(); }
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We inherit from two &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&lt;/code&gt; instantiations, one per type in the pair, with the essential bool derived from the result of our handy &lt;code class=&quot;highlighter-rouge&quot;&gt;can_ebo&lt;/code&gt; metafunction. If we pass in &lt;code class=&quot;highlighter-rouge&quot;&gt;int&lt;/code&gt; for &lt;code class=&quot;highlighter-rouge&quot;&gt;First&lt;/code&gt;, our first base class will end up being a &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&lt;/code&gt;. If we pass in &lt;code class=&quot;highlighter-rouge&quot;&gt;DeleteBuffer&lt;/code&gt;, it’ll end up being a &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&lt;/code&gt;. The private &lt;code class=&quot;highlighter-rouge&quot;&gt;first_base&lt;/code&gt; and &lt;code class=&quot;highlighter-rouge&quot;&gt;second_base&lt;/code&gt; aliases are just to make the getter implementations easier to read and more resistant to copy/paste errors, and also to enable you to make jokes about how you totally got to &lt;code class=&quot;highlighter-rouge&quot;&gt;second_base&lt;/code&gt; with a guy writing a blog post on the Internet.&lt;/p&gt;
+
+&lt;p&gt;(Notice how &lt;code class=&quot;highlighter-rouge&quot;&gt;.first()&lt;/code&gt; and &lt;code class=&quot;highlighter-rouge&quot;&gt;.second()&lt;/code&gt; are member functions, so they can do whatever the base classes deem necessary in order to give you the requested subobject. This differs from &lt;code class=&quot;highlighter-rouge&quot;&gt;std::pair&lt;/code&gt;, where &lt;code class=&quot;highlighter-rouge&quot;&gt;first&lt;/code&gt; and &lt;code class=&quot;highlighter-rouge&quot;&gt;second&lt;/code&gt; are plain data members, which is the reason why a standards-conforming &lt;code class=&quot;highlighter-rouge&quot;&gt;std::pair&lt;/code&gt; can never be implemented as a compressed pair–there’s no way to be “smart” about what &lt;code class=&quot;highlighter-rouge&quot;&gt;first&lt;/code&gt; and &lt;code class=&quot;highlighter-rouge&quot;&gt;second&lt;/code&gt; give you. It’s also the reason why &lt;code class=&quot;highlighter-rouge&quot;&gt;std::tuple&lt;/code&gt; &lt;em&gt;can&lt;/em&gt; be implemented as a “compressed tuple,” since you access its members through the function template &lt;code class=&quot;highlighter-rouge&quot;&gt;std::get&lt;/code&gt;. There are still no guarantees in the standard that tuple will be implemented in this way, though–implementors may choose to do it, but it’s purely a quality-of-implementation dealio.)&lt;/p&gt;
+
+&lt;p&gt;If we instantiate &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt; with the types that motivated this exercise, we can experience our moment of triumph in all its splendor:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;static_assert(sizeof(compressed_pair&amp;lt;GLuint, DeleteBuffer&amp;gt;) == sizeof(GLuint), &quot;&quot;);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We have officially figured out a way to store &lt;em&gt;both&lt;/em&gt; a buffer handle and its deleter in one object, while only occupying the memory of the buffer handle. Huzzah!&lt;/p&gt;
+
+&lt;h2 id=&quot;a-bug-fix&quot;&gt;A Bug Fix&lt;/h2&gt;
+
+&lt;p&gt;This works perfectly fine for this specific use case, but alas, for more general uses of &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt;, our implementation has a bug. You can see it quite easily, actually, if you try to instantiate a &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&amp;lt;int, int&amp;gt;&lt;/code&gt;. It immediately explodes:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;error: base class 'wrap&amp;lt;int, can_ebo&amp;lt;int&amp;gt;::value&amp;gt;' specified more than once as a direct base class
+    , wrap&amp;lt;Second, can_ebo&amp;lt;Second&amp;gt;::value&amp;gt; {
+      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;(via clang)&lt;/p&gt;
+
+&lt;p&gt;The error message is quite clear, and it’s true; by passing in &lt;code class=&quot;highlighter-rouge&quot;&gt;int&lt;/code&gt; twice, we’ve created the exact same instantiation of &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&lt;/code&gt; twice, and inherited directly from both of them. As you can infer from the error message, it’s illegal in C++ to inherit from the same class more than once directly. (“Directly” meaning with zero intermediate base classes in between. You can definitely end up with more than one base class of the same type if there are base classes in between, leading to the dreaded &lt;em&gt;diamond problem&lt;/em&gt;.)&lt;/p&gt;
+
+&lt;p&gt;Luckily, we can fix this very easily. We just need to make it so the first and second bases are different types. Since they’re already templates, this is trivial. We can just add a dummy parameter to &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&lt;/code&gt; that signifies &lt;em&gt;which&lt;/em&gt; base within &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt; the current instantiation is being used as. We don’t even need to &lt;em&gt;do&lt;/em&gt; anything with the dummy parameter; it just needs to be present within the template parameter list, and filled in when we instantiate:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;template&amp;lt;typename T, int Which, bool Inherit&amp;gt;
+struct wrap {
+    // same as before
+};
+
+template&amp;lt;typename T, int Which&amp;gt;
+struct wrap&amp;lt;T, Which, true&amp;gt; : T {
+    // same as before
+};
+
+template&amp;lt;typename First, typename Second&amp;gt;
+struct compressed_pair
+    : wrap&amp;lt;First, 1, can_ebo&amp;lt;First&amp;gt;::value&amp;gt;
+    , wrap&amp;lt;Second, 2, can_ebo&amp;lt;Second&amp;gt;::value&amp;gt; {
+private:
+    using first_base = wrap&amp;lt;First, 1, can_ebo&amp;lt;First&amp;gt;::value&amp;gt;;
+    using second_base = wrap&amp;lt;Second, 2, can_ebo&amp;lt;Second&amp;gt;::value&amp;gt;;
+public:
+    // same as before
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Now we have no problem instantiating a &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&amp;lt;int, int&amp;gt;&lt;/code&gt;, since the two base classes are no longer the same: one is &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&amp;lt;int, 1, false&amp;gt;&lt;/code&gt; and the other is &lt;code class=&quot;highlighter-rouge&quot;&gt;wrap&amp;lt;int, 2, false&amp;gt;&lt;/code&gt;. Maybe structurally the same, but in the eyes of the compiler, totally different types.&lt;/p&gt;
+
+&lt;h2 id=&quot;raii&quot;&gt;RAII&lt;/h2&gt;
+
+&lt;p&gt;Oh, right! We were doing all this because we were actually going to use it for something. Previously, in our &lt;code class=&quot;highlighter-rouge&quot;&gt;RAII&lt;/code&gt; class template, we had two “dumb” members of type &lt;code class=&quot;highlighter-rouge&quot;&gt;T&lt;/code&gt; and &lt;code class=&quot;highlighter-rouge&quot;&gt;Deleter&lt;/code&gt; (much like the “dumb” &lt;code class=&quot;highlighter-rouge&quot;&gt;first&lt;/code&gt; and &lt;code class=&quot;highlighter-rouge&quot;&gt;second&lt;/code&gt; in &lt;code class=&quot;highlighter-rouge&quot;&gt;std::pair&lt;/code&gt;), and we were suffering some needless overhead because of that. Let’s look at the implementation using our new, fancy, if minimal, &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt;:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;template&amp;lt;typename T, typename Deleter&amp;gt;
+class RAII {
+public:
+    RAII(T t) : pair{std::move(t)} {}
+    ~RAII() {
+        pair.second()(pair.first());
+    }
+
+    T&amp;amp; get() noexcept { return pair.first(); }
+    const T&amp;amp; get() const noexcept { return pair.first(); }
+    operator T&amp;amp;() noexcept { return get(); }
+    operator const T&amp;amp;() const noexcept { return get(); }
+
+    RAII(const RAII&amp;amp;) = delete;
+    RAII&amp;amp; operator=(const RAII&amp;amp;) = delete;
+private:
+    compressed_pair&amp;lt;T, Deleter&amp;gt; pair;
+};
+
+static_assert(sizeof(RAII&amp;lt;GLuint, DeleteBuffer&amp;gt;) == sizeof(GLuint), &quot;&quot;);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Here we’ve swapped out our two members for a single &lt;code class=&quot;highlighter-rouge&quot;&gt;compressed_pair&lt;/code&gt; instance, and adjusted our getter and destructor implementations to match. We’ve also got a &lt;code class=&quot;highlighter-rouge&quot;&gt;static_assert&lt;/code&gt; just below to gloat that our RAII wrapper now has zero overhead versus manually keeping a handle around, and manually destroying it when it comes time.&lt;/p&gt;
+
+&lt;h2 id=&quot;where-to-now&quot;&gt;Where to now?&lt;/h2&gt;
+
+&lt;p&gt;Use this wrapper in a few different spots in code and you’ll start to see it’s somewhat… limited. It’s not copyable or movable, so literally its only capability is just sitting there once it’s created. You can’t even return it from functions, or pass it into them except by reference, and you can’t really store it in a data structure in a useful way. You &lt;em&gt;can&lt;/em&gt; always imbue it with movability or copyability by sticking it in a &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; or a &lt;code class=&quot;highlighter-rouge&quot;&gt;shared_ptr&lt;/code&gt;, respectively, which realistically is probably a fine option, but to my fellow rabbit hole spelunkers: we just spent all this time shaving off a razor thin amount of overhead, so do we really want to just go and stick this on the heap after all that work?&lt;/p&gt;
+
+&lt;p&gt;Next time we’ll fix this problem by introducing opt-in move semantics for instantiations of the &lt;code class=&quot;highlighter-rouge&quot;&gt;RAII&lt;/code&gt; template, using inspiration from &lt;a href=&quot;https://en.wikipedia.org/wiki/Modern_C%2B%2B_Design#Policy-based_design&quot;&gt;policy-based design&lt;/a&gt;. Until then.&lt;/p&gt;</content><author><name>logan</name></author><category term="base" /><category term="boost" /><category term="c++" /><category term="class" /><category term="compressed" /><category term="ebo" /><category term="empty" /><category term="metaprogramming" /><category term="optimization" /><category term="pair" /><category term="raii" /><category term="struct" /><category term="template" /><category term="tuple" /><category term="unique_ptr" /><summary type="html"></summary></entry><entry><title type="html">A Zero-Overhead RAII Wrapper, Part I</title><link href="http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-i.html" rel="alternate" type="text/html" title="
+				A Zero-Overhead RAII Wrapper, Part I		" /><published>2019-01-20T16:17:22-08:00</published><updated>2019-01-20T16:17:22-08:00</updated><id>http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-i</id><content type="html" xml:base="http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-i.html">&lt;p&gt;I’ve mentioned on this blog that I’ve been aspiring to hone my graphics-programming-fu, and part of this is involves using some serious APIs. There’s OpenGL. There’s Metal. There’s Vulkan. There are &lt;a href=&quot;https://github.com/KhronosGroup/MoltenVK&quot;&gt;projects&lt;/a&gt; by certain well-known entities that implement Vulkan, but are &lt;em&gt;actually&lt;/em&gt; Metal under the hood. It’s chaos.&lt;/p&gt;
+
+&lt;p&gt;I’ve been using OpenGL for a recent demo I’ve been spinning up, and it’s been highly stimulating to my inner C++ developer. OpenGL is a C API, and an aging one at that, and much of it involves manipulating global state, and then remembering to undo those manipulations later. Any C++ programmer should start using OpenGL and immediately have their brain start buzzing about possible wrapper classes to encapsulate OpenGL objects (most of which are created somewhere mysteriously by OpenGL and handed back to you as opaque integer handles, by which you later reference, and then much later destroy, the object).&lt;/p&gt;
+
+&lt;p&gt;Most enticing is the thought of leveraging the C++ idiom known as &lt;em&gt;RAII&lt;/em&gt;, which encapsulates resource management in an easy-to-use, hard-to-misuse way. Creating and destroying OpenGL objects using an RAII wrapper is a no-brainer, but there are other very common patterns when using OpenGL, such as binding and unbinding buffers, that can also be thought of as acquiring and later relinquishing resources.&lt;/p&gt;
+
+&lt;h2 id=&quot;raii-recap&quot;&gt;RAII Recap&lt;/h2&gt;
+
+&lt;p&gt;There are exactly one billion resources that discuss this topic on the Internet, so I’ll keep this very brief. RAII stands for the abstruse and verbose &lt;em&gt;Resource Acquisition Is Initialization&lt;/em&gt;. I prefer to think of it as something more like DDSI: Destructor Does Something Interesting. When we acquire a resource, like some dynamic memory, a file handle (everyone’s favorite example), an OpenGL object handle, or a binding of global OpenGL state, we want to stick the &lt;em&gt;relinquishment&lt;/em&gt; of that resource in some object’s destructor. That way, relinquishment of the resource will happen automatically for us when the object is destroyed: if the object is on the stack, that means at the end of the block it lives in, or perhaps more compellingly, during stack unwinding–if and when we are rudely and violently interrupted by an exception, our resources will still be cleaned up properly.&lt;/p&gt;
+
+&lt;p&gt;There are a few ways to approach creating an RAII wrapper for an arbitrary resource, which we’ll look at next. For the rest of this post, I’ll be basing our RAII wrapper around the following OpenGL thingy:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;GLuint buffer;
+glGenBuffers(1, &amp;amp;buffer);
+// .. much later
+glDeleteBuffers(1, &amp;amp;buffer);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;glGenBuffers&lt;/code&gt; asks the OpenGL driver to create some buffers; it takes an integer signifying the number of buffers we want to create, and a pointer to an array of integers that it’ll populate with handles to the newly created buffers. Later, when we’re completely finished with the buffers, we call &lt;code class=&quot;highlighter-rouge&quot;&gt;glDeleteBuffers&lt;/code&gt; with the number of buffers we’d like to delete, and a pointer to an array of their handles. This API is begging for a neat way to wrap up the call to &lt;code class=&quot;highlighter-rouge&quot;&gt;glDeleteBuffers&lt;/code&gt; in a way where we can’t forget to call it, and even more importantly, a way where it’ll be called automatically for us if something goes horribly wrong.&lt;/p&gt;
+
+&lt;h2 id=&quot;unique_ptr&quot;&gt;unique_ptr&lt;/h2&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;std::unique_ptr&lt;/code&gt; is a fantastic tool provided by the C++ Standard Library that provides RAII for dynamically-allocated memory. By default, when a &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; is destroyed, it calls &lt;code class=&quot;highlighter-rouge&quot;&gt;operator delete&lt;/code&gt; on the contained object (if any), but interestingly, it is also possible to specify a different deleter for the contained object which can perform custom cleanup logic. This sounds like a good start.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct DeleteBuffer {
+    void operator()(GLuint* bufferHandle) const {
+        glDeleteBuffers(1, bufferHandle);
+    }
+};
+void foo() {
+    GLuint bufferHandle;
+    glGenBuffers(1, &amp;amp;bufferHandle);
+    std::unique_ptr&amp;lt;GLuint, DeleteBuffer&amp;gt; bufferDeleter{&amp;amp;bufferHandle};
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Not, shall we say, the prettiest. It &lt;em&gt;works&lt;/em&gt;, mind you–the &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; calls &lt;code class=&quot;highlighter-rouge&quot;&gt;DeleteBuffer::operator()&lt;/code&gt; when it is destroyed at the end of &lt;code class=&quot;highlighter-rouge&quot;&gt;foo()&lt;/code&gt;, and our buffer is thereby cleaned up properly. But the initialization of the &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; is awkward and verbose, caused in large part by the fact that &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; expects to be dealing with, well, pointers. It stores a pointer internally, and expects its deleter to take a pointer as well (hence the &lt;code class=&quot;highlighter-rouge&quot;&gt;*&lt;/code&gt; on the parameter of &lt;code class=&quot;highlighter-rouge&quot;&gt;DeleteBuffer::operator()&lt;/code&gt;).&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;Note: I initially thought you could work around this by adding &lt;code class=&quot;highlighter-rouge&quot;&gt;using pointer = GLuint;&lt;/code&gt; to the definition of &lt;code class=&quot;highlighter-rouge&quot;&gt;DeleteBuffer&lt;/code&gt;. The standard says &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; will use (roughly) &lt;code class=&quot;highlighter-rouge&quot;&gt;Deleter::pointer&lt;/code&gt; as the internal pointer type instead of &lt;code class=&quot;highlighter-rouge&quot;&gt;T*&lt;/code&gt;, if that type/typedef is present. But, when I tried it, it didn’t work–notably, the pointer type still has to be “pointer-like” in that it can be compared with / meaningfully assigned &lt;code class=&quot;highlighter-rouge&quot;&gt;nullptr&lt;/code&gt;, which &lt;code class=&quot;highlighter-rouge&quot;&gt;GLuint&lt;/code&gt; (which is just a typedef for &lt;code class=&quot;highlighter-rouge&quot;&gt;unsigned int&lt;/code&gt;, by the way) cannot.&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;Note #2: Why aren’t we using a lambda for the deleter instead of this verbose, hand-rolled function object? Because of its promise of being a low-to-zero-overhead abstraction, &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; requires that the specified deleter be stored directly inside the &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; itself, not on the heap or in some other place. Because of that, the deleter is part of the type of the &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt;, and you need to specify it when spelling out the type of the &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; (contrast this to, say, &lt;code class=&quot;highlighter-rouge&quot;&gt;shared_ptr&lt;/code&gt;, which uses some type erasure tricks so that the deleter actually isn’t part of the type). All that to say, it’s too hard to spell the type of a lambda–we need a deleter type that we can refer to by name. N.B. I couldn’t get it to work with deduction guides in C++17 mode either.&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;What’s even worse about this approach is that we are using &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; in a way it is not designed to be used. We are sneaking our buffer object handle into a &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; when it really lives on the stack. The &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt;, however, has no idea this is happening; it genuinely believes it owns the buffer handle, and if we, for example, somehow moved it out of this function, it would take the pointer to the buffer handle with it–a pointer that will quickly become invalid as soon as &lt;code class=&quot;highlighter-rouge&quot;&gt;foo()&lt;/code&gt; returns.&lt;/p&gt;
+
+&lt;p&gt;The best way to close this gaping hole where bugs can fall through is by using &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; for what it’s actually intended to do: manage dynamically-allocated memory. Our code becomes:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct DeleteBuffer {
+    void operator()(GLuint* bufferHandle) const {
+        glDeleteBuffers(1, bufferHandle);
+        delete bufferHandle;
+    }
+};
+void foo() {
+    auto bufferHandle = std::unique_ptr&amp;lt;GLuint, DeleteBuffer&amp;gt;{new GLuint};
+    glGenBuffers(1, bufferHandle.get());
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And this works. It’s actually a lot cleaner too–the &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; &lt;em&gt;is&lt;/em&gt; the buffer handle, rather than just being this weird deleter thing. If we move the &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; around, add it to a data structure, whatever, the buffer will remain alive as long as necessary.&lt;/p&gt;
+
+&lt;p&gt;But it’s still ugly. We’ve gained some exception safety and cleanup guarantees for our buffer object, but at what cost? Sticking ints on the heap. That’s a big price to pay over the hand-written version. &lt;em&gt;Who cares&lt;/em&gt;, I can hear you saying, &lt;em&gt;they’re ints&lt;/em&gt;–and yes, I agree, it’s &lt;em&gt;probably&lt;/em&gt; not going to break the bank; but it DOES involve a little dynamic allocation, and it increases memory fragmentation and decreases locality of reference, and in a high-performance context like a graphics application, that kind of stuff can be important.&lt;/p&gt;
+
+&lt;p&gt;So how can we get the same exception safety and cleanup guarantees for our buffer, while keeping the handle on the stack where it belongs?&lt;/p&gt;
+
+&lt;h2 id=&quot;our-own-simple-wrapper&quot;&gt;Our Own Simple Wrapper&lt;/h2&gt;
+
+&lt;p&gt;I won’t leave you in suspense.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;template&amp;lt;typename T, typename Deleter&amp;gt;
+class RAII {
+public:
+    RAII(T t) : object{std::move(t)} {}
+    ~RAII() {
+        d(object);
+    }
+
+    T&amp;amp; get() noexcept { return object; }
+    const T&amp;amp; get() const noexcept { return object; }
+    operator T&amp;amp;() noexcept { return get(); }
+    operator const T&amp;amp;() const noexcept { return get(); }
+
+    RAII(const RAII&amp;amp;) = delete;
+    RAII&amp;amp; operator=(const RAII&amp;amp;) = delete;
+private:
+    T object;
+    Deleter d;
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This object stores an object of arbitrary type &lt;code class=&quot;highlighter-rouge&quot;&gt;T&lt;/code&gt; inside it, along with a &lt;code class=&quot;highlighter-rouge&quot;&gt;Deleter&lt;/code&gt; object which it calls in its destructor, passing the &lt;code class=&quot;highlighter-rouge&quot;&gt;T&lt;/code&gt; as a parameter. This is the beating heart of the functionality we’re trying to attain, distilled to its arguably simplest form. Note that everything is stored inside the RAII object itself–nothing is put on the heap or anything like that.&lt;/p&gt;
+
+&lt;p&gt;Note also that copying is disabled. Moving is also implicitly disabled by the presence of our user-defined constructor and destructor. It turns out copying and moving are a bit of a thinker with RAII types, one we’ll save for part II or III or something.&lt;/p&gt;
+
+&lt;p&gt;Using this new wrapper looks like this:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct DeleteBuffer {
+    void operator()(GLuint bufferHandle) const {
+        glDeleteBuffers(1, &amp;amp;bufferHandle;);
+    }
+};
+void foo() {
+    RAII&amp;lt;GLuint, DeleteBuffer&amp;gt; buffer{0};
+    glGenBuffers(1, &amp;amp;buffer.get());
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The buffer lives until the end of the function, when &lt;code class=&quot;highlighter-rouge&quot;&gt;RAII&lt;/code&gt;’s destructor is called, and &lt;code class=&quot;highlighter-rouge&quot;&gt;DeleteBuffer::operator()&lt;/code&gt; is invoked. Note also the presence of the implicit conversion operators in the definition of the &lt;code class=&quot;highlighter-rouge&quot;&gt;RAII&lt;/code&gt; template, so we can also often (but not always) use the buffer as naturally as we could without the wrapper:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;glBindBuffer(GL_ARRAY_BUFFER, buffer); // RAII&amp;lt;T, D&amp;gt;::operator T&amp;amp;() called
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We’ve eliminated the usage of the heap, and we’ve got a nice, usable, and RAII correct wrapper, but astute readers will realize that we are still paying some tiny, tiny space overhead. In fact, I’ll prove it real quick:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;static_assert(sizeof(RAII&amp;lt;GLuint, DeleteBuffer&amp;gt;) &amp;gt; sizeof(GLuint), &quot;&quot;);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;So what’s going on? The RAII struct bundles together a &lt;code class=&quot;highlighter-rouge&quot;&gt;GLuint&lt;/code&gt; and a &lt;code class=&quot;highlighter-rouge&quot;&gt;DeleteBuffer&lt;/code&gt;, which is an empty type, so it shouldn’t add any space overhead. Right?&lt;/p&gt;
+
+&lt;p&gt;In the category of Things Every C++ Programmer Should Know, if you rummage long enough, you will sooner or later stumble upon this devious little factoid: the size of an empty type is not zero. It is, in fact, 1. There is a good (enough) reason for this: to ensure that every object has a unique address. If empty types were zero-sized, and you had a pointer to one, how would you increment that pointer? How would you loop over an array of objects of zero size? What would that even &lt;em&gt;mean&lt;/em&gt;?&lt;/p&gt;
+
+&lt;p&gt;Anyway, whatever the reason, the fact of lugging around an instance of our empty &lt;code class=&quot;highlighter-rouge&quot;&gt;DeleteBuffer&lt;/code&gt; struct within our RAII wrapper is adding one byte (or quite possibly more, because of alignment stuff) of overhead.&lt;/p&gt;
+
+&lt;p&gt;Now, you could very well, and very reasonably, say, “I do not care about wasting one byte. I’ve got guaranteed cleanup and exception safety, without using the heap, and I’m good with that. Goodbye and good day!” I, on the other hand, have never been good at avoiding rabbit holes. We’ll discuss and implement a common, tried-and-true approach for shaving off the extra byte of overhead in the next part.&lt;/p&gt;</content><author><name>logan</name></author><category term="c++" /><category term="destructor" /><category term="idiom" /><category term="metal" /><category term="opengl" /><category term="raii" /><category term="shared_ptr" /><category term="unique_ptr" /><category term="vulkan" /><summary type="html"></summary></entry><entry><title type="html">Stop Using Bare Strings</title><link href="http://localhost:4000/2019/01/19/stop-using-bare-strings.html" rel="alternate" type="text/html" title="
+				Stop Using Bare Strings		" /><published>2019-01-19T21:28:10-08:00</published><updated>2019-01-19T21:28:10-08:00</updated><id>http://localhost:4000/2019/01/19/stop-using-bare-strings</id><content type="html" xml:base="http://localhost:4000/2019/01/19/stop-using-bare-strings.html">&lt;p&gt;I was going to use the word “naked” in the title, but decided against it when I realized there’s enough nudity on the Internet already.&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&quot;https://www.youtube.com/watch?v=5tg1ONG18H8&quot;&gt;This amazing-as-usual talk by Scott Meyers&lt;/a&gt; has been haunting my brain recently, and it actually has nothing to do with his hair. He drives home important points that &lt;em&gt;should&lt;/em&gt; haunt the brain of anyone who strives to leave a positive legacy with the work they’ve done. Anyone whose biggest fear is poor innocent souls using his or her code down the line, staring in uncomprehending horror or aching disgust, and when the &lt;code class=&quot;highlighter-rouge&quot;&gt;git blame&lt;/code&gt; comes with its unwavering judgment, they sigh and mutter, “Yep, the usual suspect.” Anyone whose genuine desire is to write code that is, to harp on another Meyers-ism, “easy to use correctly, and hard to use incorrectly.”&lt;/p&gt;
+
+&lt;p&gt;Watch the talk.&lt;/p&gt;
+
+&lt;p&gt;Near the end of the talk, Scott Meyers brings down his flaming sword upon the habit of many programmers, myself often included, to over-rely on strings. It was an argument I hadn’t thoroughly considered before, and it left me feeling exposed, ashamed, and penitent, as divine judgment always does.&lt;/p&gt;
+
+&lt;p&gt;I want to contribute some thoughts on the matter, some shapes the problem takes, and some possible solutions.&lt;/p&gt;
+
+&lt;h2 id=&quot;the-problem&quot;&gt;The Problem&lt;/h2&gt;
+
+&lt;p&gt;Consider the following function:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;std::unique_ptr&amp;lt;Texture&amp;gt; load(const std::string&amp;amp; path);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Without being able to see its definition, what do we know about it? What do we &lt;em&gt;not&lt;/em&gt; know about it?&lt;/p&gt;
+
+&lt;p&gt;Well, clearly it’s going to do some interaction with the file system to load some type of file, and create some sort of in-memory representation of a &lt;code class=&quot;highlighter-rouge&quot;&gt;Texture&lt;/code&gt;, whatever that is (maybe we’re in a graphics application?). A &lt;code class=&quot;highlighter-rouge&quot;&gt;Texture&lt;/code&gt; is big enough that we want to put it on the heap (or perhaps it’s polymorphic), and we’re getting a &lt;code class=&quot;highlighter-rouge&quot;&gt;unique_ptr&lt;/code&gt; to it, which is good–safety and efficiency by default, and we can always move it into a &lt;code class=&quot;highlighter-rouge&quot;&gt;shared_ptr&lt;/code&gt; later if we need to.&lt;/p&gt;
+
+&lt;p&gt;What are we ignoring? If you’re anything like me (and it’s quite possible I’m alone here), there is an actual pang of anxiety when you see the &lt;code class=&quot;highlighter-rouge&quot;&gt;path&lt;/code&gt; parameter, accompanied by a question: what kind of path? Absolute? Relative? If relative, relative to where? If I got the string I’m going to call this function with from somewhere else, how can I be sure it’s the right type of path? Is it my job to do that, or is the function going to somehow validate the path, or convert relative paths to absolute paths, or something?&lt;/p&gt;
+
+&lt;p&gt;What’s even more interesting than the pang of anxiety is that I, at least, have &lt;em&gt;learned to ignore&lt;/em&gt; it, because having absolute certainty about how to call functions is not something I have come to expect from programming. I expect to probably get it wrong the first time… I’ll spend a couple minutes looking for the problem, and then I’ll figure it out, and it’ll be fine. Except when that couple minutes turns into a couple hours, or a couple days….&lt;/p&gt;
+
+&lt;p&gt;Alright, sorry. Less pontificating, more code. We get it, the string parameter is scary. I get rambly like this sometimes.&lt;/p&gt;
+
+&lt;h2 id=&quot;some-solutions&quot;&gt;Some Solutions&lt;/h2&gt;
+
+&lt;p&gt;Here’s one possible, tempting solution to this problem:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;using AbsolutePath = std::string; 
+// ... 
+std::unique_ptr&amp;lt;Texture&amp;gt; load(const AbsolutePath&amp;amp; path);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This is definitely a step in the right direction. The function definition is now &lt;em&gt;much&lt;/em&gt; more readable–it clearly expects an absolute path, and to be honest, it goes a long, long way toward eliminating my anxiety about calling this function–I know exactly how to do it correctly now. In codebases I’ve worked on, I’ve stopped here, and felt relatively good about it.&lt;/p&gt;
+
+&lt;p&gt;But of course, this relies on users of the function to go to the declaration to read the signature, and isn’t resistant to incremental refactoring, nor does it have even a smidgen of type safety. Since &lt;code class=&quot;highlighter-rouge&quot;&gt;AbsolutePath&lt;/code&gt; is just an alias for &lt;code class=&quot;highlighter-rouge&quot;&gt;std::string&lt;/code&gt;, we have gained nothing at the call site:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;const std::string relativePath = &quot;my_stuff/texture.png&quot;;
+auto texture = load(relativePath);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Even more blatantly/offensively:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;const std::string relativePath = &quot;my_stuff/texture.png&quot;;
+const AbsolutePath absolutePath = relativePath;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;In a perfect world, I would be warned, by the compiler or the linter or something, about making that mistake. No, scratch that–in a perfect world, it should be &lt;em&gt;impossible&lt;/em&gt; to make that mistake.&lt;/p&gt;
+
+&lt;p&gt;In fact, this is something that type systems are great for, and C++ comes with a very sophisticated, robust, and expressive one.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct AbsolutePath {
+     explicit AbsolutePath(std::string s) : path{std::move(s)} {}
+     std::string path;
+}; 
+struct RelativePath {
+     explicit RelativePath(std::string s) : path{std::move(s)} {}
+     std::string path;
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Now we get a compiler error:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;const RelativePath relativePath = {&quot;my_stuff/texture.png&quot;};
+const AbsolutePath = relativePath; // error: no viable conversion from 'RelativePath' to 'AbsolutePath'
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This is good. We are prevented by the compiler from passing in the wrong type of path to &lt;code class=&quot;highlighter-rouge&quot;&gt;load&lt;/code&gt;. Also, we can’t just pass in plain strings to &lt;code class=&quot;highlighter-rouge&quot;&gt;load&lt;/code&gt; anymore either (note the &lt;code class=&quot;highlighter-rouge&quot;&gt;explicit&lt;/code&gt; constructors), giving the programmer an error if they try, and more importantly an impetus to stop and think about what they are trying to pass in. The only cost of these benefits is changing usage of the &lt;code class=&quot;highlighter-rouge&quot;&gt;path&lt;/code&gt; argument in the implementation of &lt;code class=&quot;highlighter-rouge&quot;&gt;load&lt;/code&gt; to &lt;code class=&quot;highlighter-rouge&quot;&gt;path.path&lt;/code&gt; instead, grabbing the inner string out of the wrapper.&lt;/p&gt;
+
+&lt;p&gt;This API is now “hard to use incorrectly,” to echo the Meyers mantra. But we still have (at least) one more step we can take toward making it “easy to use correctly.” A key observation is that we can (probably, depending on the exact situation) create AbsolutePaths from RelativePaths in a programmatic way–appending the &lt;code class=&quot;highlighter-rouge&quot;&gt;pwd&lt;/code&gt; and doing tilde expansion and all that jazz. Let’s say we have correctly and neatly implemented that functionality in this function:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;std::string makeAbsolutePath(const std::string&amp;amp; relativePath);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;&lt;em&gt;(I’m not too worried about the &lt;code class=&quot;highlighter-rouge&quot;&gt;std::string&lt;/code&gt;s in this signature–this function’s job is to take the actual sequence of characters that make up a relative path, and transform them into the sequence of characters that comprise an absolute path. Hopefully it’s a static function tucked away in an implementation file somewhere, away from possible misuse.)&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;Look what happens now, if we juggle our implementations of our path structs around a bit:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct RelativePath {
+    explicit RelativePath(std::string s) : path{std::move(s)} {}
+    std::string path;
+};
+struct AbsolutePath {
+    explicit AbsolutePath(std::string s) : path{std::move(s)} {}
+    AbsolutePath(const RelativePath&amp;amp; r) : path{makeAbsolutePath(r.path)} {}
+    std::string path;
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;What happened here? We have a new constructor taking a &lt;code class=&quot;highlighter-rouge&quot;&gt;RelativePath&lt;/code&gt; which calls the appropriate conversion on the internal &lt;code class=&quot;highlighter-rouge&quot;&gt;std::string&lt;/code&gt;s. Notably, this new constructor is not &lt;code class=&quot;highlighter-rouge&quot;&gt;explicit&lt;/code&gt;, leading to some cool conveniences:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;auto texture = load(RelativePath{&quot;my_stuff/texture.png&quot;});
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Wait, we passed a &lt;code class=&quot;highlighter-rouge&quot;&gt;RelativePath&lt;/code&gt; to &lt;code class=&quot;highlighter-rouge&quot;&gt;load&lt;/code&gt;? That’s right! Because the &lt;code class=&quot;highlighter-rouge&quot;&gt;AbsolutePath&lt;/code&gt; constructor in question was not made &lt;code class=&quot;highlighter-rouge&quot;&gt;explicit&lt;/code&gt;, you can &lt;em&gt;implicit&lt;/em&gt;ly construct one from a relative path, and the newly-constructed &lt;code class=&quot;highlighter-rouge&quot;&gt;AbsolutePath&lt;/code&gt; will have called &lt;code class=&quot;highlighter-rouge&quot;&gt;makeAbsolutePath&lt;/code&gt; to do all the work to make the actual absolute path needed. You can even do the super offensive version in this same way:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;const RelativePath relativePath{&quot;my_stuff/texture.png&quot;};
+const AbsolutePath absolutePath = relativePath;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The new &lt;code class=&quot;highlighter-rouge&quot;&gt;absolutePath&lt;/code&gt; variable is now tilde-expanded and all that stuff, and everything “just works.”&lt;/p&gt;
+
+&lt;p&gt;(Note: some people won’t like this, and it legitimately may not suit your application. The implicit call to &lt;code class=&quot;highlighter-rouge&quot;&gt;makeAbsolutePath&lt;/code&gt; is almost certainly going to involve dynamic memory allocation and lots of complicated logic, and having it happen without your explicit intention may be a performance bug, if you’re programming on the chip in my washing machine.)&lt;/p&gt;
+
+&lt;p&gt;At the end of all this, we have type-safe paths that express our intentions when reading the source code, and are easy to use correctly (pass in a relative path if you want… I’ll convert it to an absolute path for you!) and hard to use incorrectly (compiler errors if you do it wrong). This makes for a clean, friendly, usable API that gives my anxiety a much-needed break.&lt;/p&gt;
+
+&lt;h2 id=&quot;addendum&quot;&gt;Addendum&lt;/h2&gt;
+
+&lt;p&gt;If you’re like me, the code duplication here makes your eyes hurt a tiny, tiny bit. Okay, not even hurt, just kind of itch:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct AbsolutePath {
+    explicit AbsolutePath(std::string s) : path{std::move(s)} {}
+    std::string path;
+};
+struct RelativePath {
+    explicit RelativePath(std::string s) : path{std::move(s)} {}
+    std::string path;
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We have the &lt;em&gt;exact same&lt;/em&gt; shape of struct in this example, differing only in the name. In fact, differing in only PART of the name–they’re both paths, just different sorts of paths.&lt;/p&gt;
+
+&lt;p&gt;We can factor out this duplication by using a small, simple template, and using a trick involving empty &lt;em&gt;tag types&lt;/em&gt;. This was inspired by an approach I saw recently taken by Rust’s &lt;a href=&quot;https://github.com/servo/euclid&quot;&gt;euclid&lt;/a&gt; crate for encoding units into their different geometric types.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;template&amp;lt;typename PathTag&amp;gt;
+struct Path {
+    explicit Path(std::string s) : path{std::move(s)} {}
+    std::string path;
+};
+struct RelativeTag {};
+struct AbsoluteTag {};
+
+using RelativePath = Path&amp;lt;RelativeTag&amp;gt;;
+using AbsolutePath = Path&amp;lt;AbsoluteTag&amp;gt;;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Using this trick you get the exact same semantics as the earlier approach–you still can’t assign between &lt;code class=&quot;highlighter-rouge&quot;&gt;AbsolutePath&lt;/code&gt; and &lt;code class=&quot;highlighter-rouge&quot;&gt;RelativePath&lt;/code&gt; (they’re different types still, because the template parameters are different), and the core logic is factored out. Of course, it is more lines of code, but since you’re using a template, you get to feel smart.&lt;/p&gt;
+
+&lt;p&gt;When we add the other constructor to &lt;code class=&quot;highlighter-rouge&quot;&gt;AbsolutePath&lt;/code&gt;, it gets trickier. &lt;code class=&quot;highlighter-rouge&quot;&gt;RelativePath&lt;/code&gt; can stay just being a type alias, but we actually need to create a new type for &lt;code class=&quot;highlighter-rouge&quot;&gt;AbsolutePath&lt;/code&gt; so we can add a constructor to it. I solved it this way:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct AbsolutePath : Path&amp;lt;AbsoluteTag&amp;gt; {
+    using Path::Path; // inherit base class constructors
+    AbsolutePath(const RelativePath&amp;amp;); // yada yada
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Probably an overly complicated abstraction for this simple case, where we only have two types of paths, and their internal structure is really simple. It might be useful, though, for other applications of this pattern of wrapping simple, less-meaningful types in stronger wrappers.&lt;/p&gt;
+
+&lt;p&gt;;&lt;/p&gt;</content><author><name>logan</name></author><category term="c++" /><category term="class" /><category term="constructor" /><category term="explicit" /><category term="implicit" /><category term="scott meyers" /><category term="shared_ptr" /><category term="standard" /><category term="std::string" /><category term="string" /><category term="struct" /><category term="template" /><category term="type safety" /><category term="unique_ptr" /><summary type="html"></summary></entry><entry><title type="html">Uh-oh</title><link href="http://localhost:4000/2019/01/19/uh-oh.html" rel="alternate" type="text/html" title="
+				Uh-oh		" /><published>2019-01-19T19:00:21-08:00</published><updated>2019-01-19T19:00:21-08:00</updated><id>http://localhost:4000/2019/01/19/uh-oh</id><content type="html" xml:base="http://localhost:4000/2019/01/19/uh-oh.html">&lt;p&gt;I’ve decided to:&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;Actually kinda sorta use this blog&lt;/li&gt;
+  &lt;li&gt;Take it in a technical direction&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;I’ve got a pie-in-the-sky dream to learn more about graphics programming this year, something I’ve always been fascinated by, and have dabbled in quite a bit at work and in personal projects, but until now I’ve been too chicken to take the bull by the horns, become a Jedi Master, and mix metaphors.&lt;/p&gt;
+
+&lt;p&gt;I also write C++ full-time at work, and am constantly learning new and interesting things about it. I’ve got a huge amount of interest in programming languages, old and new, and am engaged in an eternal Sisyphean struggle of starting and restarting a personal project of writing an interpreter/bytecode compiler/actual compiler/everything-under-the-sun for a scripting language I’ve designed. Coming soon. Or whatever.&lt;/p&gt;
+
+&lt;p&gt;All that to say: this blog thing is gonna go great. Right?&lt;/p&gt;</content><author><name>logan</name></author><summary type="html"></summary></entry><entry><title type="html">‘Duh’ of the Day: Strict Weak Ordering</title><link href="http://localhost:4000/2016/07/04/duh-of-the-day-strict-weak-ordering.html" rel="alternate" type="text/html" title="
+				'Duh' of the Day: Strict Weak Ordering		" /><published>2016-07-04T00:50:38-07:00</published><updated>2016-07-04T00:50:38-07:00</updated><id>http://localhost:4000/2016/07/04/duh-of-the-day-strict-weak-ordering</id><content type="html" xml:base="http://localhost:4000/2016/07/04/duh-of-the-day-strict-weak-ordering.html">&lt;p&gt;Today I was nearly bludgeoned to death by &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt; and my ignorance of strict weak ordering.&lt;/p&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt; is the best. In short, it implements an associative container of keys and values. You know how your contacts in your phone are sorted by name? You say to your address book, “Hey, I know the name of the person, now give me the phone number associated with that person’ fs name.” &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt; is the tool for describing such a relationship in C++ code; you could create a &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt; and have that represent your address book data. You can create any arbitrary key-value relationship; you provide the key, the map knows the value. &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt;, &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&amp;lt;uspresident, favoritecolor&amp;gt;&lt;/code&gt;, &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&amp;lt;species, endangeredstatus&amp;gt;&lt;/code&gt;, &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&amp;lt;hotsauce, goodorbad&amp;gt;&lt;/code&gt; would all be legitimate uses (assuming you had defined the types in question, of course).&lt;/p&gt;
+
+&lt;p&gt;It even provides some nice syntax, in particular the &lt;code class=&quot;highlighter-rouge&quot;&gt;[]&lt;/code&gt; operator. If I want to access a member of the map, like Barack Obama’s favorite color, I can use &lt;code class=&quot;highlighter-rouge&quot;&gt;presidentsFavoriteColors[&quot;Obama&quot;]&lt;/code&gt; to get it. But the nice thing is, if I haven’t actually specified Obama’s favorite color yet, the map won’t yell at me; it will be nice and create the entry for Obama for me, and it will “just work.” (The &lt;code class=&quot;highlighter-rouge&quot;&gt;mapped_type&lt;/code&gt;, in this case &lt;code class=&quot;highlighter-rouge&quot;&gt;FavoriteColor&lt;/code&gt;, must be default-constructible for this to work, which in this example may actually not be apt–what’s the default favorite color?) This syntax is reminiscent of PHP’s associative arrays, and I think discovering it was the first time something in C++ made me think, “Wow, how friendly!” Of course, there is also the often-important “unfriendly” (bounds-checking, exception-throwing) version of this same accessor, the &lt;code class=&quot;highlighter-rouge&quot;&gt;.at()&lt;/code&gt; method.&lt;/p&gt;
+
+&lt;p&gt;Anyway, I’ve created a new type that I’m very proud of, and I want to use that type as the key in a &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt;. Let’s say the type looks like this:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct KeyType {
+public:
+    int data;
+    float otherData;
+    KeyType() : data(0), otherData(0.f) {}
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Great! Now, I just have to declare a &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&amp;lt;KeyType, int&amp;gt;&lt;/code&gt; and start using it.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;// somewhere in main()
+std::map&amp;lt;KeyType, int&amp;gt; t;
+t[KeyType()] = 1;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Shoot! Compiler error. &lt;code class=&quot;highlighter-rouge&quot;&gt;Invalid operands to binary expression ('const KeyType' and 'const KeyType')&lt;/code&gt;. (That’s &lt;code class=&quot;highlighter-rouge&quot;&gt;Apple LLVM version 7.3.0 (clang-703.0.31)&lt;/code&gt;.)&lt;/p&gt;
+
+&lt;p&gt;Googling a bit, I see my mistake. You can’t just use any object willy-nilly as a key for &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt; (same goes for &lt;code class=&quot;highlighter-rouge&quot;&gt;std::set&lt;/code&gt;). The reason is that objects in a map are sorted by their keys; much like the names in your address book are sorted alphabetically. This allows for very fast (&lt;code class=&quot;highlighter-rouge&quot;&gt;O(log n)&lt;/code&gt;) insertion, deletion, and search operations. For trivial key types like &lt;code class=&quot;highlighter-rouge&quot;&gt;int&lt;/code&gt;, this is innate; obviously 3 is less than 7, and so the object with a key of 3 should go first. For text strings, this also makes sense; sort them in alphabetical order. For my new type, &lt;code class=&quot;highlighter-rouge&quot;&gt;KeyType&lt;/code&gt;, how is the map to know which one comes first?&lt;/p&gt;
+
+&lt;p&gt;In short, I need to overload &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt;, so that the map knows how to tell if one key should come before another. (Don’t try to be clever about this. Overriding &lt;code class=&quot;highlighter-rouge&quot;&gt;operator==&lt;/code&gt; or &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt; won’t “just work” here, you’ll have to provide the map with a custom comparator function. Just stop.)&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;This is because the C++ standard library often defines equality by &lt;code class=&quot;highlighter-rouge&quot;&gt;!(a, not &lt;/code&gt;a==b`.&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;_``_Okay, so I need to specify when one &lt;code class=&quot;highlighter-rouge&quot;&gt;KeyType&lt;/code&gt; is less than another; easy.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;bool operator&amp;lt;(const KeyType&amp;amp; lhs, const KeyType&amp;amp; rhs) {
+    return lhs.data &amp;lt; rhs.data || lhs.otherData &amp;lt; rhs.otherData;
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;&lt;em&gt;your mileage may vary; if your object is not a &lt;code class=&quot;highlighter-rouge&quot;&gt;struct&lt;/code&gt; with all public members, you may need to make your operator a member of your object, or declare it a &lt;code class=&quot;highlighter-rouge&quot;&gt;friend&lt;/code&gt; within your object.&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;Obviously, if I’m comparing two &lt;code class=&quot;highlighter-rouge&quot;&gt;KeyType&lt;/code&gt;s, and either of the data members of A is less than that same data member of B, then A should be considered less than B, right?&lt;/p&gt;
+
+&lt;p&gt;Under this same (dumb) assumption, hours of my life and several magnitudes of joy went down the drain.&lt;/p&gt;
+
+&lt;p&gt;The &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt; I’ve defined above does not conform to “Strict Weak Ordering.” Strict Weak Ordering is defined as such: &lt;code class=&quot;highlighter-rouge&quot;&gt;if A is less than B, then B is not less than A&lt;/code&gt;. Makes sense, and turns out to be crucial for &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt; to function properly.&lt;/p&gt;
+
+&lt;p&gt;Consider two &lt;code class=&quot;highlighter-rouge&quot;&gt;KeyType&lt;/code&gt; objects. Pseudocode:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;KeyType A = KeyType ( 1, 0.0 );
+KeyType B = KeyType ( 0, 1.0 );
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Using the &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt; I’ve defined above, think about &lt;code class=&quot;highlighter-rouge&quot;&gt;(A &amp;lt; B)&lt;/code&gt;. &lt;code class=&quot;highlighter-rouge&quot;&gt;A&lt;/code&gt;’s &lt;code class=&quot;highlighter-rouge&quot;&gt;int&lt;/code&gt; member is greater than &lt;code class=&quot;highlighter-rouge&quot;&gt;B&lt;/code&gt;’s, but its &lt;code class=&quot;highlighter-rouge&quot;&gt;float&lt;/code&gt; field is less than &lt;code class=&quot;highlighter-rouge&quot;&gt;B&lt;/code&gt;’s, so &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt; returns &lt;code class=&quot;highlighter-rouge&quot;&gt;true&lt;/code&gt;. However, by the same token, &lt;code class=&quot;highlighter-rouge&quot;&gt;(B &amp;lt; A)&lt;/code&gt; also returns &lt;code class=&quot;highlighter-rouge&quot;&gt;true&lt;/code&gt;, because the &lt;code class=&quot;highlighter-rouge&quot;&gt;int&lt;/code&gt; in &lt;code class=&quot;highlighter-rouge&quot;&gt;B&lt;/code&gt; is less than that in &lt;code class=&quot;highlighter-rouge&quot;&gt;A&lt;/code&gt;.&lt;/p&gt;
+
+&lt;p&gt;Hence, &lt;code class=&quot;highlighter-rouge&quot;&gt;(A &amp;lt; B)&lt;/code&gt;, AND &lt;code class=&quot;highlighter-rouge&quot;&gt;(B &amp;lt; A)&lt;/code&gt;. This is mathematical nonsense, and it turns out, &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt; doesn’t like it either. If I were a clickbait article, I might say, “&lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt; HATES this!” It breaks everything internally, including inserting things in the first place, so your map will end up inserting your stuff and then not being able to find it later.&lt;/p&gt;
+
+&lt;p&gt;This is because my &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt; does not conform to Strict Weak Ordering. I was trying to squash a bug in my code for hours/days; thinking there was a bug in the library implementation of &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map&lt;/code&gt;, thinking the universe was playing a trick on me. The light bulb moment for me came when I thought about ordering words in a dictionary. Consider three words, “apple,” “Advil,” and “banana.” Which comes first, alphabetically?&lt;/p&gt;
+
+&lt;p&gt;Using my &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt; shown above, the answer might be “banana,” because the second letter of “banana” (‘a’) comes before the second letter of “apple” or “Advil.” But everyone knows that’s wrong; you don’t even LOOK at the second letter until AFTER it’s clear that the first letters are the same. “Banana” gets discarded immediately; it’s between “apple” and “Advil,” which “Advil” wins because, even though the first letters are the same, the second letter ‘d’ comes before ‘p’.&lt;/p&gt;
+
+&lt;p&gt;Implementing an &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt; that conforms to Strict Weak Ordering needs to follow the same logic. Pick the member with the greatest importance (it might not really matter), and let the comparison proceed to compare other fields IF AND ONLY IF the first fields are equal (like the first letters of “apple” and “Advil”).&lt;/p&gt;
+
+&lt;p&gt;Here’s a corrected &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt;:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;bool operator&amp;lt;(const KeyType&amp;amp; lhs, const KeyType&amp;amp; rhs) {
+    if ( lhs.data &amp;lt; rhs.data )
+        return true;
+    if ( rhs.data &amp;lt;lhs.data )
+        return false;
+    if ( lhs.otherData &amp;lt; lhs.otherData )
+        return true;
+    return false;
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Verbose? Maybe. Correct? Finally. We look at the first &lt;code class=&quot;highlighter-rouge&quot;&gt;int&lt;/code&gt; member of each, and compare them; we move on to comparing the &lt;code class=&quot;highlighter-rouge&quot;&gt;float&lt;/code&gt; IF AND ONLY IF the &lt;code class=&quot;highlighter-rouge&quot;&gt;int&lt;/code&gt;s are different.&lt;/p&gt;
+
+&lt;p&gt;The above can be expanded ad infinitum, for any number of data members you’d like to compare to determine equivalence of keys. You can determine which members are important, and which aren’t–some might not even be included in the comparison. But you need to make sure that your &lt;code class=&quot;highlighter-rouge&quot;&gt;operator&amp;lt;&lt;/code&gt; is robust enough that it complies with Strict Weak Ordering. Otherwise operations like &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map::find()&lt;/code&gt; (as well as &lt;code class=&quot;highlighter-rouge&quot;&gt;std::set::find()&lt;/code&gt;), &lt;code class=&quot;highlighter-rouge&quot;&gt;std::map::at()&lt;/code&gt;, and others, will seemingly randomly fail, because the map doesn’t even know how to find what is inside itself, because it’s all mixed up.&lt;/p&gt;
+
+&lt;p&gt;Sounds a bit like the human condition! This problem, however, we can definitively solve. So, do it.&lt;/p&gt;
+
+&lt;hr /&gt;
+
+&lt;p&gt;_Note from like 2.5 years later when trying to sort-of-revive this blog and going back and finding this post: _&lt;/p&gt;
+
+&lt;p&gt;Don’t write your comparison operator like the above. The C++ standard library provides a function template called &lt;code class=&quot;highlighter-rouge&quot;&gt;std::tie&lt;/code&gt; that will create a tuple of references (avoiding big copies or moves or whatever you’re afraid of), and &lt;code class=&quot;highlighter-rouge&quot;&gt;std::tuple&lt;/code&gt;s implement lexicographical comparison right of the box:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;bool operator&amp;lt;(const KeyType&amp;amp; lhs, const KeyType&amp;amp; rhs) { 
+   return std::tie(lhs.data, lhs.otherData) &amp;lt; std::tie(rhs.data, rhs.otherData);
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And you’re done. Same semantics as the above, but harder to get wrong, easier to write and read, and one less thing to worry about in that short, sweet life of yours.&lt;/p&gt;</content><author><name>logan</name></author><summary type="html"></summary></entry><entry><title type="html">Laundry Punch Trailer/Promo Video</title><link href="http://localhost:4000/2016/02/21/laundry-punch-trailerpromo-video.html" rel="alternate" type="text/html" title="
+				Laundry Punch Trailer/Promo Video		" /><published>2016-02-21T13:23:30-08:00</published><updated>2016-02-21T13:23:30-08:00</updated><id>http://localhost:4000/2016/02/21/laundry-punch-trailerpromo-video</id><content type="html" xml:base="http://localhost:4000/2016/02/21/laundry-punch-trailerpromo-video.html">&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;			Behold!  I made this, after releasing the game already.  Someone take me to marketing school.
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Download the game for free &lt;a href=&quot;https://itunes.apple.com/us/app/laundry-punch/id1037648117&quot;&gt;here&lt;/a&gt;!&lt;/p&gt;</content><author><name>logan</name></author><summary type="html"></summary></entry><entry><title type="html">Laundry Punch is live!</title><link href="http://localhost:4000/2016/02/18/laundry-punch-is-live.html" rel="alternate" type="text/html" title="
+				Laundry Punch is live!		" /><published>2016-02-18T19:47:06-08:00</published><updated>2016-02-18T19:47:06-08:00</updated><id>http://localhost:4000/2016/02/18/laundry-punch-is-live</id><content type="html" xml:base="http://localhost:4000/2016/02/18/laundry-punch-is-live.html">&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;			Sometime in September 2015, a few curious factors aligned. I was sitting on my bed in my apartment playing an iOS game called Burger (go check it out), marveling about how simple it was, and yet frustratingly addicting.  I was curious about whether I could likewise isolate a singular pleasurable sensory experience (e.g. flipping a patty onto a bun) and make a game revolving around it.  My thoughts were interrupted, unfortunately, by the buzz of the dryer next door to my apartment, which had just finished drying my clothes.
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;By the time I returned to my apartment with my clothes, Laundry Punch was born; the game where you sort your shirts by color into their hampers by punching them.&lt;/p&gt;
+
+&lt;p&gt;I was eager to develop the game in Swift, as up to then all my iOS development had been in Objective-C, and I wanted to learn the ropes.  I chose Cocos2d/SpriteBuilder, an old friend, as the engine, so I could focus on Swift and the game itself without having to learn a new engine API on top of everything.&lt;/p&gt;
+
+&lt;p&gt;The rest is history.  I had an amazingly fun time developing the game, and even more fun beta testing it with some really good friends of mine, who were eager to give their suggestions and help improve it (some of the best parts of the game came from them, thanks guys).  The game was basically finished by mid-late October 2015.  Whether or not I had accomplished my goal of matching the simplicity of Burger with the fun of Burger was questionable, but I was confident that I had made a fun game.&lt;/p&gt;
+
+&lt;p&gt;AND THEN&lt;/p&gt;
+
+&lt;p&gt;I sat around for a few months doing absolutely nothing with it, and I don’t know why.&lt;/p&gt;
+
+&lt;p&gt;AND THEN&lt;/p&gt;
+
+&lt;p&gt;I submitted it to the App Store, and it was approved, and it’s live, and it’s free, and it’s fun??&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&quot;https://itunes.apple.com/us/app/laundry-punch/id1037648117&quot;&gt;View in the App Store!&lt;/a&gt;
+&lt;a href=&quot;https://www.facebook.com/laundrypunch&quot;&gt;View on Facebook!&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;May the hordes of shirts be cleaned ever so violently by the might of your reigning fist.  Enjoy.&lt;/p&gt;
+
+&lt;p&gt;–Logan&lt;/p&gt;</content><author><name>logan</name></author><summary type="html"></summary></entry><entry><title type="html">Hello, A Million Times</title><link href="http://localhost:4000/2015/08/30/hello-a-million-times.html" rel="alternate" type="text/html" title="
+				Hello, A Million Times		" /><published>2015-08-30T14:53:47-07:00</published><updated>2015-08-30T14:53:47-07:00</updated><id>http://localhost:4000/2015/08/30/hello-a-million-times</id><content type="html" xml:base="http://localhost:4000/2015/08/30/hello-a-million-times.html">&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;#include 
+
+int main() {
+    for ( int i = 0; i &amp;lt; 1000000; ++i )
+        std::cout &amp;lt;&amp;lt; &quot;hello\n&quot;;
+    return 0;
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;I’ll be using this blog to post about noise and/or code as they arise and/or merit attention and/or don’t. Please enjoy your stay.&lt;/p&gt;
+
+&lt;p&gt;– Logan&lt;/p&gt;</content><author><name>logan</name></author><summary type="html"></summary></entry></feed>

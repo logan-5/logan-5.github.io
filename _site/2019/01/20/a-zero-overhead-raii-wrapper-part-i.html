@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.6.0 -->
+<title>A Zero-Overhead RAII Wrapper, Part I | Your awesome title</title>
+<meta name="generator" content="Jekyll v3.8.5" />
+<meta property="og:title" content="A Zero-Overhead RAII Wrapper, Part I" />
+<meta name="author" content="logan" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description." />
+<meta property="og:description" content="Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description." />
+<link rel="canonical" href="http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-i.html" />
+<meta property="og:url" content="http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-i.html" />
+<meta property="og:site_name" content="Your awesome title" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2019-01-20T16:17:22-08:00" />
+<script type="application/ld+json">
+{"description":"Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description.","author":{"@type":"Person","name":"logan"},"@type":"BlogPosting","url":"http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-i.html","headline":"A Zero-Overhead RAII Wrapper, Part I","dateModified":"2019-01-20T16:17:22-08:00","datePublished":"2019-01-20T16:17:22-08:00","mainEntityOfPage":{"@type":"WebPage","@id":"http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-i.html"},"@context":"https://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="http://localhost:4000/feed.xml" title="Your awesome title" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">Your awesome title</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">
+				A Zero-Overhead RAII Wrapper, Part I		</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2019-01-20T16:17:22-08:00" itemprop="datePublished">Jan 20, 2019
+      </time>• <span itemprop="author" itemscope itemtype="http://schema.org/Person"><span class="p-author h-card" itemprop="name">logan</span></span></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>I’ve mentioned on this blog that I’ve been aspiring to hone my graphics-programming-fu, and part of this is involves using some serious APIs. There’s OpenGL. There’s Metal. There’s Vulkan. There are <a href="https://github.com/KhronosGroup/MoltenVK">projects</a> by certain well-known entities that implement Vulkan, but are <em>actually</em> Metal under the hood. It’s chaos.</p>
+
+<p>I’ve been using OpenGL for a recent demo I’ve been spinning up, and it’s been highly stimulating to my inner C++ developer. OpenGL is a C API, and an aging one at that, and much of it involves manipulating global state, and then remembering to undo those manipulations later. Any C++ programmer should start using OpenGL and immediately have their brain start buzzing about possible wrapper classes to encapsulate OpenGL objects (most of which are created somewhere mysteriously by OpenGL and handed back to you as opaque integer handles, by which you later reference, and then much later destroy, the object).</p>
+
+<p>Most enticing is the thought of leveraging the C++ idiom known as <em>RAII</em>, which encapsulates resource management in an easy-to-use, hard-to-misuse way. Creating and destroying OpenGL objects using an RAII wrapper is a no-brainer, but there are other very common patterns when using OpenGL, such as binding and unbinding buffers, that can also be thought of as acquiring and later relinquishing resources.</p>
+
+<h2 id="raii-recap">RAII Recap</h2>
+
+<p>There are exactly one billion resources that discuss this topic on the Internet, so I’ll keep this very brief. RAII stands for the abstruse and verbose <em>Resource Acquisition Is Initialization</em>. I prefer to think of it as something more like DDSI: Destructor Does Something Interesting. When we acquire a resource, like some dynamic memory, a file handle (everyone’s favorite example), an OpenGL object handle, or a binding of global OpenGL state, we want to stick the <em>relinquishment</em> of that resource in some object’s destructor. That way, relinquishment of the resource will happen automatically for us when the object is destroyed: if the object is on the stack, that means at the end of the block it lives in, or perhaps more compellingly, during stack unwinding–if and when we are rudely and violently interrupted by an exception, our resources will still be cleaned up properly.</p>
+
+<p>There are a few ways to approach creating an RAII wrapper for an arbitrary resource, which we’ll look at next. For the rest of this post, I’ll be basing our RAII wrapper around the following OpenGL thingy:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>GLuint buffer;
+glGenBuffers(1, &amp;buffer);
+// .. much later
+glDeleteBuffers(1, &amp;buffer);
+</code></pre></div></div>
+
+<p><code class="highlighter-rouge">glGenBuffers</code> asks the OpenGL driver to create some buffers; it takes an integer signifying the number of buffers we want to create, and a pointer to an array of integers that it’ll populate with handles to the newly created buffers. Later, when we’re completely finished with the buffers, we call <code class="highlighter-rouge">glDeleteBuffers</code> with the number of buffers we’d like to delete, and a pointer to an array of their handles. This API is begging for a neat way to wrap up the call to <code class="highlighter-rouge">glDeleteBuffers</code> in a way where we can’t forget to call it, and even more importantly, a way where it’ll be called automatically for us if something goes horribly wrong.</p>
+
+<h2 id="unique_ptr">unique_ptr</h2>
+
+<p><code class="highlighter-rouge">std::unique_ptr</code> is a fantastic tool provided by the C++ Standard Library that provides RAII for dynamically-allocated memory. By default, when a <code class="highlighter-rouge">unique_ptr</code> is destroyed, it calls <code class="highlighter-rouge">operator delete</code> on the contained object (if any), but interestingly, it is also possible to specify a different deleter for the contained object which can perform custom cleanup logic. This sounds like a good start.</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>struct DeleteBuffer {
+    void operator()(GLuint* bufferHandle) const {
+        glDeleteBuffers(1, bufferHandle);
+    }
+};
+void foo() {
+    GLuint bufferHandle;
+    glGenBuffers(1, &amp;bufferHandle);
+    std::unique_ptr&lt;GLuint, DeleteBuffer&gt; bufferDeleter{&amp;bufferHandle};
+}
+</code></pre></div></div>
+
+<p>Not, shall we say, the prettiest. It <em>works</em>, mind you–the <code class="highlighter-rouge">unique_ptr</code> calls <code class="highlighter-rouge">DeleteBuffer::operator()</code> when it is destroyed at the end of <code class="highlighter-rouge">foo()</code>, and our buffer is thereby cleaned up properly. But the initialization of the <code class="highlighter-rouge">unique_ptr</code> is awkward and verbose, caused in large part by the fact that <code class="highlighter-rouge">unique_ptr</code> expects to be dealing with, well, pointers. It stores a pointer internally, and expects its deleter to take a pointer as well (hence the <code class="highlighter-rouge">*</code> on the parameter of <code class="highlighter-rouge">DeleteBuffer::operator()</code>).</p>
+
+<p><em>Note: I initially thought you could work around this by adding <code class="highlighter-rouge">using pointer = GLuint;</code> to the definition of <code class="highlighter-rouge">DeleteBuffer</code>. The standard says <code class="highlighter-rouge">unique_ptr</code> will use (roughly) <code class="highlighter-rouge">Deleter::pointer</code> as the internal pointer type instead of <code class="highlighter-rouge">T*</code>, if that type/typedef is present. But, when I tried it, it didn’t work–notably, the pointer type still has to be “pointer-like” in that it can be compared with / meaningfully assigned <code class="highlighter-rouge">nullptr</code>, which <code class="highlighter-rouge">GLuint</code> (which is just a typedef for <code class="highlighter-rouge">unsigned int</code>, by the way) cannot.</em></p>
+
+<p><em>Note #2: Why aren’t we using a lambda for the deleter instead of this verbose, hand-rolled function object? Because of its promise of being a low-to-zero-overhead abstraction, <code class="highlighter-rouge">unique_ptr</code> requires that the specified deleter be stored directly inside the <code class="highlighter-rouge">unique_ptr</code> itself, not on the heap or in some other place. Because of that, the deleter is part of the type of the <code class="highlighter-rouge">unique_ptr</code>, and you need to specify it when spelling out the type of the <code class="highlighter-rouge">unique_ptr</code> (contrast this to, say, <code class="highlighter-rouge">shared_ptr</code>, which uses some type erasure tricks so that the deleter actually isn’t part of the type). All that to say, it’s too hard to spell the type of a lambda–we need a deleter type that we can refer to by name. N.B. I couldn’t get it to work with deduction guides in C++17 mode either.</em></p>
+
+<p>What’s even worse about this approach is that we are using <code class="highlighter-rouge">unique_ptr</code> in a way it is not designed to be used. We are sneaking our buffer object handle into a <code class="highlighter-rouge">unique_ptr</code> when it really lives on the stack. The <code class="highlighter-rouge">unique_ptr</code>, however, has no idea this is happening; it genuinely believes it owns the buffer handle, and if we, for example, somehow moved it out of this function, it would take the pointer to the buffer handle with it–a pointer that will quickly become invalid as soon as <code class="highlighter-rouge">foo()</code> returns.</p>
+
+<p>The best way to close this gaping hole where bugs can fall through is by using <code class="highlighter-rouge">unique_ptr</code> for what it’s actually intended to do: manage dynamically-allocated memory. Our code becomes:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>struct DeleteBuffer {
+    void operator()(GLuint* bufferHandle) const {
+        glDeleteBuffers(1, bufferHandle);
+        delete bufferHandle;
+    }
+};
+void foo() {
+    auto bufferHandle = std::unique_ptr&lt;GLuint, DeleteBuffer&gt;{new GLuint};
+    glGenBuffers(1, bufferHandle.get());
+}
+</code></pre></div></div>
+
+<p>And this works. It’s actually a lot cleaner too–the <code class="highlighter-rouge">unique_ptr</code> <em>is</em> the buffer handle, rather than just being this weird deleter thing. If we move the <code class="highlighter-rouge">unique_ptr</code> around, add it to a data structure, whatever, the buffer will remain alive as long as necessary.</p>
+
+<p>But it’s still ugly. We’ve gained some exception safety and cleanup guarantees for our buffer object, but at what cost? Sticking ints on the heap. That’s a big price to pay over the hand-written version. <em>Who cares</em>, I can hear you saying, <em>they’re ints</em>–and yes, I agree, it’s <em>probably</em> not going to break the bank; but it DOES involve a little dynamic allocation, and it increases memory fragmentation and decreases locality of reference, and in a high-performance context like a graphics application, that kind of stuff can be important.</p>
+
+<p>So how can we get the same exception safety and cleanup guarantees for our buffer, while keeping the handle on the stack where it belongs?</p>
+
+<h2 id="our-own-simple-wrapper">Our Own Simple Wrapper</h2>
+
+<p>I won’t leave you in suspense.</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>template&lt;typename T, typename Deleter&gt;
+class RAII {
+public:
+    RAII(T t) : object{std::move(t)} {}
+    ~RAII() {
+        d(object);
+    }
+
+    T&amp; get() noexcept { return object; }
+    const T&amp; get() const noexcept { return object; }
+    operator T&amp;() noexcept { return get(); }
+    operator const T&amp;() const noexcept { return get(); }
+
+    RAII(const RAII&amp;) = delete;
+    RAII&amp; operator=(const RAII&amp;) = delete;
+private:
+    T object;
+    Deleter d;
+};
+</code></pre></div></div>
+
+<p>This object stores an object of arbitrary type <code class="highlighter-rouge">T</code> inside it, along with a <code class="highlighter-rouge">Deleter</code> object which it calls in its destructor, passing the <code class="highlighter-rouge">T</code> as a parameter. This is the beating heart of the functionality we’re trying to attain, distilled to its arguably simplest form. Note that everything is stored inside the RAII object itself–nothing is put on the heap or anything like that.</p>
+
+<p>Note also that copying is disabled. Moving is also implicitly disabled by the presence of our user-defined constructor and destructor. It turns out copying and moving are a bit of a thinker with RAII types, one we’ll save for part II or III or something.</p>
+
+<p>Using this new wrapper looks like this:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>struct DeleteBuffer {
+    void operator()(GLuint bufferHandle) const {
+        glDeleteBuffers(1, &amp;bufferHandle;);
+    }
+};
+void foo() {
+    RAII&lt;GLuint, DeleteBuffer&gt; buffer{0};
+    glGenBuffers(1, &amp;buffer.get());
+}
+</code></pre></div></div>
+
+<p>The buffer lives until the end of the function, when <code class="highlighter-rouge">RAII</code>’s destructor is called, and <code class="highlighter-rouge">DeleteBuffer::operator()</code> is invoked. Note also the presence of the implicit conversion operators in the definition of the <code class="highlighter-rouge">RAII</code> template, so we can also often (but not always) use the buffer as naturally as we could without the wrapper:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>glBindBuffer(GL_ARRAY_BUFFER, buffer); // RAII&lt;T, D&gt;::operator T&amp;() called
+</code></pre></div></div>
+
+<p>We’ve eliminated the usage of the heap, and we’ve got a nice, usable, and RAII correct wrapper, but astute readers will realize that we are still paying some tiny, tiny space overhead. In fact, I’ll prove it real quick:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>static_assert(sizeof(RAII&lt;GLuint, DeleteBuffer&gt;) &gt; sizeof(GLuint), "");
+</code></pre></div></div>
+
+<p>So what’s going on? The RAII struct bundles together a <code class="highlighter-rouge">GLuint</code> and a <code class="highlighter-rouge">DeleteBuffer</code>, which is an empty type, so it shouldn’t add any space overhead. Right?</p>
+
+<p>In the category of Things Every C++ Programmer Should Know, if you rummage long enough, you will sooner or later stumble upon this devious little factoid: the size of an empty type is not zero. It is, in fact, 1. There is a good (enough) reason for this: to ensure that every object has a unique address. If empty types were zero-sized, and you had a pointer to one, how would you increment that pointer? How would you loop over an array of objects of zero size? What would that even <em>mean</em>?</p>
+
+<p>Anyway, whatever the reason, the fact of lugging around an instance of our empty <code class="highlighter-rouge">DeleteBuffer</code> struct within our RAII wrapper is adding one byte (or quite possibly more, because of alignment stuff) of overhead.</p>
+
+<p>Now, you could very well, and very reasonably, say, “I do not care about wasting one byte. I’ve got guaranteed cleanup and exception safety, without using the heap, and I’m good with that. Goodbye and good day!” I, on the other hand, have never been good at avoiding rabbit holes. We’ll discuss and implement a common, tried-and-true approach for shaving off the extra byte of overhead in the next part.</p>
+
+
+  </div><a class="u-url" href="/2019/01/20/a-zero-overhead-raii-wrapper-part-i.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Your awesome title</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">Your awesome title</li><li><a class="u-email" href="mailto:your-email@example.com">your-email@example.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/jekyll"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">jekyll</span></a></li><li><a href="https://www.twitter.com/jekyllrb"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">jekyllrb</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

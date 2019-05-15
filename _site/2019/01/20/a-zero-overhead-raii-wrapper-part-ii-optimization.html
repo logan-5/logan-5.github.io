@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.6.0 -->
+<title>A Zero-Overhead RAII Wrapper, Part II: Optimization | Your awesome title</title>
+<meta name="generator" content="Jekyll v3.8.5" />
+<meta property="og:title" content="A Zero-Overhead RAII Wrapper, Part II: Optimization" />
+<meta name="author" content="logan" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description." />
+<meta property="og:description" content="Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description." />
+<link rel="canonical" href="http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-ii-optimization.html" />
+<meta property="og:url" content="http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-ii-optimization.html" />
+<meta property="og:site_name" content="Your awesome title" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2019-01-20T22:46:09-08:00" />
+<script type="application/ld+json">
+{"description":"Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description.","author":{"@type":"Person","name":"logan"},"@type":"BlogPosting","url":"http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-ii-optimization.html","headline":"A Zero-Overhead RAII Wrapper, Part II: Optimization","dateModified":"2019-01-20T22:46:09-08:00","datePublished":"2019-01-20T22:46:09-08:00","mainEntityOfPage":{"@type":"WebPage","@id":"http://localhost:4000/2019/01/20/a-zero-overhead-raii-wrapper-part-ii-optimization.html"},"@context":"https://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="http://localhost:4000/feed.xml" title="Your awesome title" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">Your awesome title</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">
+				A Zero-Overhead RAII Wrapper, Part II: Optimization		</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2019-01-20T22:46:09-08:00" itemprop="datePublished">Jan 20, 2019
+      </time>• <span itemprop="author" itemscope itemtype="http://schema.org/Person"><span class="p-author h-card" itemprop="name">logan</span></span></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>In the last part, we implemented a very simple stack-based RAII wrapper for an OpenGL buffer object. The code was simple enough, clean, and easy to use, but we paid the price of a tiny amount of space overhead required for storing a deleter along with the buffer’s handle, which is a price we didn’t have to pay in the handwritten version of the code. This overhead came from the fact that empty structs have a size of one byte in C++, and by storing the deleter along with the handle naively in a flat structure, this extra byte affected the total size of our RAII wrapper. We’ll spend this part Doing Something About That.</p>
+
+<h4 id="a-short-disclaimer">A Short Disclaimer</h4>
+
+<p>We are literally talking about one byte here. The following is a dive into a rabbit hole, for the joy and academic thrill of discovery, for the fun of learning something new and maybe brushing up on our template metaprogramming skills. I do not claim that optimizing away one byte is a good use of substantial amounts of your personal time, or your company’s time, if it’s not something you are interested in for its own sake.</p>
+
+<p>Alright, on with the geeking.</p>
+
+<h2 id="optimization">Optimization</h2>
+
+<p>As it happens, implementations of <code class="highlighter-rouge">std::unique_ptr</code> are faced with this same problem: the <code class="highlighter-rouge">unique_ptr</code> instance has to carry around an instance of a (possibly/probably empty) user-provided deleter, or else the standard <code class="highlighter-rouge">std::default_delete</code>, which is also an empty struct, and thus has nonzero size. Their cause for fixing this nonzero-size problem is perhaps somewhat better motivated than our little use case. The standards committee is thoroughly concerned with moving C++ in a direction of simpler, safer, and better code, and <code class="highlighter-rouge">unique_ptr</code> (among other smart pointers) is one of the most exciting newer tools for attaining that. However, <code class="highlighter-rouge">std::unique_ptr</code> is up against the Goliath of <em>decades</em> of programmers using owning raw pointers. In order to be a competitive, viable option that can be recommended wholeheartedly and unequivocally for all single-owner dynamically-allocated objects in every new C++ program, present and future, there simply has to be a way to implement it in a way that suffers <em>zero</em> overhead over the equivalent raw pointer.</p>
+
+<p>And, you guessed it, there is.</p>
+
+<p>In order to shave off that extra byte of overhead we introduced by having to cart around an instance of our empty deleter struct, we’re going to use a tool that many <code class="highlighter-rouge">unique_ptr</code> implementations also use internally called a <code class="highlighter-rouge">compressed_pair</code>. A <code class="highlighter-rouge">compressed_pair</code> is fundamentally similar to a <code class="highlighter-rouge">std::pair</code>, in that it models two objects bundled together, but it takes advantage of a very common compiler optimization to store empty structs without using any extra space.</p>
+
+<p><code class="highlighter-rouge">compressed_pair</code> isn’t provided by the standard library (though many standard library implementations have one they use internally). If your project uses Boost, go ahead and whip out <code class="highlighter-rouge">boost::compressed_pair</code> and you’re done; you can skip the rest of this section. Your standard library may also implement <code class="highlighter-rouge">std::tuple</code> using the “compressed” technique; if so, use that, and you too can be excused. For the rest of us less fortunate (or those who want to learn), we’re going to bang out a simple, bare-bones <code class="highlighter-rouge">compressed_pair</code> that will eliminate the overhead of the deleter in our RAII wrapper.</p>
+
+<p>The optimization that powers <code class="highlighter-rouge">compressed_pair</code> is known as the <em>Empty Base Optimization</em>, and it is deliberately allowed by the C++ standard, and even required in certain circumstances. <a href="https://en.cppreference.com/w/cpp/language/ebo">cppreference</a> describes it better and more succinctly than I could: the empty base optimization “[a]llows the size of an empty base subobject to be zero.” We can see it in action here:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>struct A {};
+static_assert(sizeof(A) == 1, "");
+struct B : A { int i; };
+static_assert(sizeof(B) == sizeof(int), "your compiler is broken!");
+</code></pre></div></div>
+
+<p>Notice how, even though the size of <code class="highlighter-rouge">A</code> is normally 1, when it is used as a base class of <code class="highlighter-rouge">B</code>, that 1 byte disappears and the total size of <code class="highlighter-rouge">B</code> is simply the size of its <code class="highlighter-rouge">int</code> member. We can use this little interesting behavior to our advantage when writing our <code class="highlighter-rouge">compressed_pair</code>. If we instantiate a <code class="highlighter-rouge">compressed_pair</code>, for example, we’ll just store <code class="highlighter-rouge">int</code>s as members as normal, but if one (or both) of the types given is an empty struct, we’ll <em>inherit</em> from it instead.</p>
+
+<p>The following bits of code use some template metaprogramming tricks that are beyond the scope of this post to explain in detail, but I’ll try to keep the results simple enough to read.</p>
+
+<h2 id="wrapt-bool">wrap&lt;T, bool&gt;</h2>
+
+<p>Let’s start by modeling those two fundamental pieces: sometimes we want to have a given type as a member, other times we want to inherit from it. We’ll write a little helper that encapsulates this piece of the problem, and then we’ll use it to build up the rest of the solution later.</p>
+
+<p>I want a single template that represents wrapping an object. It should take a type <code class="highlighter-rouge">T</code> and a <code class="highlighter-rouge">bool</code>. When I pass <code class="highlighter-rouge">false</code> for the bool, I want it to have the object as a member. When I pass <code class="highlighter-rouge">true</code>, I want it to inherit from the object. I like calling this template <code class="highlighter-rouge">wrap</code> because that’s all it does (this little wrapper can also be reused for other purposes, like <a href="http://noisecode.net/blog/2019/01/20/stop-using-bare-strings/">wrapping up your naked strings</a>). I’ll get us started:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#include &lt;type_traits&gt;
+
+template&lt;typename T, bool Inherit&gt;
+struct wrap {
+    T&amp; get() noexcept { return t; }
+    const T&amp; get() const noexcept { return t; }
+    T t;
+};
+</code></pre></div></div>
+
+<p>This is the so-called <em>primary template</em>, which, as you can see, models the case where the object is a member. We also provide two overloads of a method called <code class="highlighter-rouge">get()</code>, which provide a uniform interface for retrieving the object inside a <code class="highlighter-rouge">wrap</code> which might need to be <code class="highlighter-rouge">get</code>ted in different ways depending on the <code class="highlighter-rouge">Inherit</code> bool.</p>
+
+<p>Here’s the second version, a partial specialization of the primary template, where we inherit from <code class="highlighter-rouge">T</code> instead if the bool was given as <code class="highlighter-rouge">true</code>:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>template&lt;typename T&gt;
+struct wrap&lt;T, true&gt; : T {
+    static_assert(std::is_class&lt;T&gt;::value &amp;&amp; !std::is_final&lt;T&gt;::value,
+                  "can't inherit from type given to wrap&lt;T, true&gt;");
+    T&amp; get() noexcept { return *this; }
+    const T&amp; get() const noexcept { return *this; }
+};
+</code></pre></div></div>
+
+<p>This version, as you can see, requires that <code class="highlighter-rouge">T</code> be a non-final class, since that’s the only way we can inherit from it. (The <code class="highlighter-rouge">static_assert</code> is just for the user-friendly error message–you’ll get an arcane error either way if you try to use the template with a non-class, or a with final class.) Its <code class="highlighter-rouge">get()</code> methods, curiously but reasonably, return a reference to itself, since by inheriting from a <code class="highlighter-rouge">T</code>, it <em>is</em> a <code class="highlighter-rouge">T</code>.</p>
+
+<p>We can test that it’s working by instantiating it with some different types:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>wrap&lt;int, false&gt; w0{5};
+// wrap&lt;int, true&gt; w1{5}; // error: can't inherit from int
+wrap&lt;DeleteBuffer, false&gt; w2; // DeleteBuffer as member
+wrap&lt;DeleteBuffer, true&gt; w3; // DeleteBuffer as base class
+</code></pre></div></div>
+
+<p>What about this <code class="highlighter-rouge">bool</code> business? We’re not going to be able to pass in literal <code class="highlighter-rouge">true</code> or <code class="highlighter-rouge">false</code> when it comes time to use this in our <code class="highlighter-rouge">compressed_pair</code>–we’ll need to intelligently pick the one to use based on the nature of the types given to us. For this, we need a <em>metafunction</em>: a “function” that takes a type as a parameter and returns us another type as a result. (If the idea of a metafunction is new to you, take a deep breath, drink in the splendor of the wild world of C++ template metaprogramming on the horizon in front of you, and then immediately stop and watch <a href="https://www.youtube.com/watch?v=Am2is2QCvxY">this incredible talk</a>).</p>
+
+<p>Here’s a metafunction that “returns” whether or not a given type is eligible for taking advantage of the empty base optimization (abbreviated “ebo”). Thankfully, the standard type traits library already provides all the important pieces, we just have to stick them together:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>template &lt;typename T&gt;
+struct can_ebo
+    : std::integral_constant&lt;bool,
+                             std::is_empty&lt;T&gt;::value &amp;&amp;
+                                 !std::is_final&lt;T&gt;::value&gt; {};
+</code></pre></div></div>
+
+<p>I won’t explain everything metaprogramming-y going on here, but the important part is that we check whether the type is empty (which also implicitly checks if it’s a class, since non-classes can’t be empty), and whether it’s final… alas, it’s true, some poor sod could declare their empty class <code class="highlighter-rouge">final</code>, for some unsearchable reason, and render all of our ingenious EBO optimization non-applicable.</p>
+
+<p>(Note: if you’re using C++17, you can just do <code class="highlighter-rouge">std::is_empty_v&lt;T&gt;</code> above, and likewise for the other. Some platforms still have some catching up to do before this is possible… like mine.)</p>
+
+<p>All that’s left is to put this all together. We know how to switch between inheriting from something and having it as a member; and we know how to tell if we’ll benefit from the empty base optimization. Let’s take a stab at combining it all into a simple <code class="highlighter-rouge">compressed_pair</code>.</p>
+
+<h2 id="compressed_pair">compressed_pair</h2>
+
+<p>Our <code class="highlighter-rouge">compressed_pair</code> template is basically going to take two template parameters, for the first and second types, hand those two types off to two instantiations of <code class="highlighter-rouge">wrap</code>, and then inherit from both of them. We’re also going to provide a way to access the two things within the pair, using the base <code class="highlighter-rouge">wrap</code>s’ <code class="highlighter-rouge">get()</code> methods:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>template&lt;typename First, typename Second&gt;
+struct compressed_pair
+    : wrap&lt;First, can_ebo&lt;First&gt;::value&gt;
+    , wrap&lt;Second, can_ebo&lt;Second&gt;::value&gt; {
+private:
+    using first_base = wrap&lt;First, can_ebo&lt;First&gt;::value&gt;;
+    using second_base = wrap&lt;Second, can_ebo&lt;Second&gt;::value&gt;;
+public:
+    First&amp; first() noexcept { return first_base::get(); }
+    const First&amp; first() const noexcept { return first_base::get(); }
+    Second&amp; second() noexcept { return second_base::get(); }
+    const Second&amp; second() const noexcept { return second_base::get(); }
+};
+</code></pre></div></div>
+
+<p>We inherit from two <code class="highlighter-rouge">wrap</code> instantiations, one per type in the pair, with the essential bool derived from the result of our handy <code class="highlighter-rouge">can_ebo</code> metafunction. If we pass in <code class="highlighter-rouge">int</code> for <code class="highlighter-rouge">First</code>, our first base class will end up being a <code class="highlighter-rouge">wrap</code>. If we pass in <code class="highlighter-rouge">DeleteBuffer</code>, it’ll end up being a <code class="highlighter-rouge">wrap</code>. The private <code class="highlighter-rouge">first_base</code> and <code class="highlighter-rouge">second_base</code> aliases are just to make the getter implementations easier to read and more resistant to copy/paste errors, and also to enable you to make jokes about how you totally got to <code class="highlighter-rouge">second_base</code> with a guy writing a blog post on the Internet.</p>
+
+<p>(Notice how <code class="highlighter-rouge">.first()</code> and <code class="highlighter-rouge">.second()</code> are member functions, so they can do whatever the base classes deem necessary in order to give you the requested subobject. This differs from <code class="highlighter-rouge">std::pair</code>, where <code class="highlighter-rouge">first</code> and <code class="highlighter-rouge">second</code> are plain data members, which is the reason why a standards-conforming <code class="highlighter-rouge">std::pair</code> can never be implemented as a compressed pair–there’s no way to be “smart” about what <code class="highlighter-rouge">first</code> and <code class="highlighter-rouge">second</code> give you. It’s also the reason why <code class="highlighter-rouge">std::tuple</code> <em>can</em> be implemented as a “compressed tuple,” since you access its members through the function template <code class="highlighter-rouge">std::get</code>. There are still no guarantees in the standard that tuple will be implemented in this way, though–implementors may choose to do it, but it’s purely a quality-of-implementation dealio.)</p>
+
+<p>If we instantiate <code class="highlighter-rouge">compressed_pair</code> with the types that motivated this exercise, we can experience our moment of triumph in all its splendor:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>static_assert(sizeof(compressed_pair&lt;GLuint, DeleteBuffer&gt;) == sizeof(GLuint), "");
+</code></pre></div></div>
+
+<p>We have officially figured out a way to store <em>both</em> a buffer handle and its deleter in one object, while only occupying the memory of the buffer handle. Huzzah!</p>
+
+<h2 id="a-bug-fix">A Bug Fix</h2>
+
+<p>This works perfectly fine for this specific use case, but alas, for more general uses of <code class="highlighter-rouge">compressed_pair</code>, our implementation has a bug. You can see it quite easily, actually, if you try to instantiate a <code class="highlighter-rouge">compressed_pair&lt;int, int&gt;</code>. It immediately explodes:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>error: base class 'wrap&lt;int, can_ebo&lt;int&gt;::value&gt;' specified more than once as a direct base class
+    , wrap&lt;Second, can_ebo&lt;Second&gt;::value&gt; {
+      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+</code></pre></div></div>
+
+<p>(via clang)</p>
+
+<p>The error message is quite clear, and it’s true; by passing in <code class="highlighter-rouge">int</code> twice, we’ve created the exact same instantiation of <code class="highlighter-rouge">wrap</code> twice, and inherited directly from both of them. As you can infer from the error message, it’s illegal in C++ to inherit from the same class more than once directly. (“Directly” meaning with zero intermediate base classes in between. You can definitely end up with more than one base class of the same type if there are base classes in between, leading to the dreaded <em>diamond problem</em>.)</p>
+
+<p>Luckily, we can fix this very easily. We just need to make it so the first and second bases are different types. Since they’re already templates, this is trivial. We can just add a dummy parameter to <code class="highlighter-rouge">wrap</code> that signifies <em>which</em> base within <code class="highlighter-rouge">compressed_pair</code> the current instantiation is being used as. We don’t even need to <em>do</em> anything with the dummy parameter; it just needs to be present within the template parameter list, and filled in when we instantiate:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>template&lt;typename T, int Which, bool Inherit&gt;
+struct wrap {
+    // same as before
+};
+
+template&lt;typename T, int Which&gt;
+struct wrap&lt;T, Which, true&gt; : T {
+    // same as before
+};
+
+template&lt;typename First, typename Second&gt;
+struct compressed_pair
+    : wrap&lt;First, 1, can_ebo&lt;First&gt;::value&gt;
+    , wrap&lt;Second, 2, can_ebo&lt;Second&gt;::value&gt; {
+private:
+    using first_base = wrap&lt;First, 1, can_ebo&lt;First&gt;::value&gt;;
+    using second_base = wrap&lt;Second, 2, can_ebo&lt;Second&gt;::value&gt;;
+public:
+    // same as before
+};
+</code></pre></div></div>
+
+<p>Now we have no problem instantiating a <code class="highlighter-rouge">compressed_pair&lt;int, int&gt;</code>, since the two base classes are no longer the same: one is <code class="highlighter-rouge">wrap&lt;int, 1, false&gt;</code> and the other is <code class="highlighter-rouge">wrap&lt;int, 2, false&gt;</code>. Maybe structurally the same, but in the eyes of the compiler, totally different types.</p>
+
+<h2 id="raii">RAII</h2>
+
+<p>Oh, right! We were doing all this because we were actually going to use it for something. Previously, in our <code class="highlighter-rouge">RAII</code> class template, we had two “dumb” members of type <code class="highlighter-rouge">T</code> and <code class="highlighter-rouge">Deleter</code> (much like the “dumb” <code class="highlighter-rouge">first</code> and <code class="highlighter-rouge">second</code> in <code class="highlighter-rouge">std::pair</code>), and we were suffering some needless overhead because of that. Let’s look at the implementation using our new, fancy, if minimal, <code class="highlighter-rouge">compressed_pair</code>:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>template&lt;typename T, typename Deleter&gt;
+class RAII {
+public:
+    RAII(T t) : pair{std::move(t)} {}
+    ~RAII() {
+        pair.second()(pair.first());
+    }
+
+    T&amp; get() noexcept { return pair.first(); }
+    const T&amp; get() const noexcept { return pair.first(); }
+    operator T&amp;() noexcept { return get(); }
+    operator const T&amp;() const noexcept { return get(); }
+
+    RAII(const RAII&amp;) = delete;
+    RAII&amp; operator=(const RAII&amp;) = delete;
+private:
+    compressed_pair&lt;T, Deleter&gt; pair;
+};
+
+static_assert(sizeof(RAII&lt;GLuint, DeleteBuffer&gt;) == sizeof(GLuint), "");
+</code></pre></div></div>
+
+<p>Here we’ve swapped out our two members for a single <code class="highlighter-rouge">compressed_pair</code> instance, and adjusted our getter and destructor implementations to match. We’ve also got a <code class="highlighter-rouge">static_assert</code> just below to gloat that our RAII wrapper now has zero overhead versus manually keeping a handle around, and manually destroying it when it comes time.</p>
+
+<h2 id="where-to-now">Where to now?</h2>
+
+<p>Use this wrapper in a few different spots in code and you’ll start to see it’s somewhat… limited. It’s not copyable or movable, so literally its only capability is just sitting there once it’s created. You can’t even return it from functions, or pass it into them except by reference, and you can’t really store it in a data structure in a useful way. You <em>can</em> always imbue it with movability or copyability by sticking it in a <code class="highlighter-rouge">unique_ptr</code> or a <code class="highlighter-rouge">shared_ptr</code>, respectively, which realistically is probably a fine option, but to my fellow rabbit hole spelunkers: we just spent all this time shaving off a razor thin amount of overhead, so do we really want to just go and stick this on the heap after all that work?</p>
+
+<p>Next time we’ll fix this problem by introducing opt-in move semantics for instantiations of the <code class="highlighter-rouge">RAII</code> template, using inspiration from <a href="https://en.wikipedia.org/wiki/Modern_C%2B%2B_Design#Policy-based_design">policy-based design</a>. Until then.</p>
+
+
+  </div><a class="u-url" href="/2019/01/20/a-zero-overhead-raii-wrapper-part-ii-optimization.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Your awesome title</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">Your awesome title</li><li><a class="u-email" href="mailto:your-email@example.com">your-email@example.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/jekyll"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">jekyll</span></a></li><li><a href="https://www.twitter.com/jekyllrb"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">jekyllrb</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

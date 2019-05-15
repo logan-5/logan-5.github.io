@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.6.0 -->
+<title>&#39;Duh&#39; of the Day: Strict Weak Ordering | Your awesome title</title>
+<meta name="generator" content="Jekyll v3.8.5" />
+<meta property="og:title" content="&#39;Duh&#39; of the Day: Strict Weak Ordering" />
+<meta name="author" content="logan" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description." />
+<meta property="og:description" content="Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description." />
+<link rel="canonical" href="http://localhost:4000/2016/07/04/duh-of-the-day-strict-weak-ordering.html" />
+<meta property="og:url" content="http://localhost:4000/2016/07/04/duh-of-the-day-strict-weak-ordering.html" />
+<meta property="og:site_name" content="Your awesome title" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2016-07-04T00:50:38-07:00" />
+<script type="application/ld+json">
+{"description":"Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description.","author":{"@type":"Person","name":"logan"},"@type":"BlogPosting","url":"http://localhost:4000/2016/07/04/duh-of-the-day-strict-weak-ordering.html","headline":"&#39;Duh&#39; of the Day: Strict Weak Ordering","dateModified":"2016-07-04T00:50:38-07:00","datePublished":"2016-07-04T00:50:38-07:00","mainEntityOfPage":{"@type":"WebPage","@id":"http://localhost:4000/2016/07/04/duh-of-the-day-strict-weak-ordering.html"},"@context":"https://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="http://localhost:4000/feed.xml" title="Your awesome title" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">Your awesome title</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">
+				&#39;Duh&#39; of the Day: Strict Weak Ordering		</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2016-07-04T00:50:38-07:00" itemprop="datePublished">Jul 4, 2016
+      </time>• <span itemprop="author" itemscope itemtype="http://schema.org/Person"><span class="p-author h-card" itemprop="name">logan</span></span></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>Today I was nearly bludgeoned to death by <code class="highlighter-rouge">std::map</code> and my ignorance of strict weak ordering.</p>
+
+<p><code class="highlighter-rouge">std::map</code> is the best. In short, it implements an associative container of keys and values. You know how your contacts in your phone are sorted by name? You say to your address book, “Hey, I know the name of the person, now give me the phone number associated with that person’ fs name.” <code class="highlighter-rouge">std::map</code> is the tool for describing such a relationship in C++ code; you could create a <code class="highlighter-rouge">std::map</code> and have that represent your address book data. You can create any arbitrary key-value relationship; you provide the key, the map knows the value. <code class="highlighter-rouge">std::map</code>, <code class="highlighter-rouge">std::map&lt;uspresident, favoritecolor&gt;</code>, <code class="highlighter-rouge">std::map&lt;species, endangeredstatus&gt;</code>, <code class="highlighter-rouge">std::map&lt;hotsauce, goodorbad&gt;</code> would all be legitimate uses (assuming you had defined the types in question, of course).</p>
+
+<p>It even provides some nice syntax, in particular the <code class="highlighter-rouge">[]</code> operator. If I want to access a member of the map, like Barack Obama’s favorite color, I can use <code class="highlighter-rouge">presidentsFavoriteColors["Obama"]</code> to get it. But the nice thing is, if I haven’t actually specified Obama’s favorite color yet, the map won’t yell at me; it will be nice and create the entry for Obama for me, and it will “just work.” (The <code class="highlighter-rouge">mapped_type</code>, in this case <code class="highlighter-rouge">FavoriteColor</code>, must be default-constructible for this to work, which in this example may actually not be apt–what’s the default favorite color?) This syntax is reminiscent of PHP’s associative arrays, and I think discovering it was the first time something in C++ made me think, “Wow, how friendly!” Of course, there is also the often-important “unfriendly” (bounds-checking, exception-throwing) version of this same accessor, the <code class="highlighter-rouge">.at()</code> method.</p>
+
+<p>Anyway, I’ve created a new type that I’m very proud of, and I want to use that type as the key in a <code class="highlighter-rouge">std::map</code>. Let’s say the type looks like this:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>struct KeyType {
+public:
+    int data;
+    float otherData;
+    KeyType() : data(0), otherData(0.f) {}
+};
+</code></pre></div></div>
+
+<p>Great! Now, I just have to declare a <code class="highlighter-rouge">std::map&lt;KeyType, int&gt;</code> and start using it.</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>// somewhere in main()
+std::map&lt;KeyType, int&gt; t;
+t[KeyType()] = 1;
+</code></pre></div></div>
+
+<p>Shoot! Compiler error. <code class="highlighter-rouge">Invalid operands to binary expression ('const KeyType' and 'const KeyType')</code>. (That’s <code class="highlighter-rouge">Apple LLVM version 7.3.0 (clang-703.0.31)</code>.)</p>
+
+<p>Googling a bit, I see my mistake. You can’t just use any object willy-nilly as a key for <code class="highlighter-rouge">std::map</code> (same goes for <code class="highlighter-rouge">std::set</code>). The reason is that objects in a map are sorted by their keys; much like the names in your address book are sorted alphabetically. This allows for very fast (<code class="highlighter-rouge">O(log n)</code>) insertion, deletion, and search operations. For trivial key types like <code class="highlighter-rouge">int</code>, this is innate; obviously 3 is less than 7, and so the object with a key of 3 should go first. For text strings, this also makes sense; sort them in alphabetical order. For my new type, <code class="highlighter-rouge">KeyType</code>, how is the map to know which one comes first?</p>
+
+<p>In short, I need to overload <code class="highlighter-rouge">operator&lt;</code>, so that the map knows how to tell if one key should come before another. (Don’t try to be clever about this. Overriding <code class="highlighter-rouge">operator==</code> or <code class="highlighter-rouge">operator&lt;</code> won’t “just work” here, you’ll have to provide the map with a custom comparator function. Just stop.)</p>
+
+<p><em>This is because the C++ standard library often defines equality by <code class="highlighter-rouge">!(a, not </code>a==b`.</em></p>
+
+<p>_``_Okay, so I need to specify when one <code class="highlighter-rouge">KeyType</code> is less than another; easy.</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>bool operator&lt;(const KeyType&amp; lhs, const KeyType&amp; rhs) {
+    return lhs.data &lt; rhs.data || lhs.otherData &lt; rhs.otherData;
+}
+</code></pre></div></div>
+
+<p><em>your mileage may vary; if your object is not a <code class="highlighter-rouge">struct</code> with all public members, you may need to make your operator a member of your object, or declare it a <code class="highlighter-rouge">friend</code> within your object.</em></p>
+
+<p>Obviously, if I’m comparing two <code class="highlighter-rouge">KeyType</code>s, and either of the data members of A is less than that same data member of B, then A should be considered less than B, right?</p>
+
+<p>Under this same (dumb) assumption, hours of my life and several magnitudes of joy went down the drain.</p>
+
+<p>The <code class="highlighter-rouge">operator&lt;</code> I’ve defined above does not conform to “Strict Weak Ordering.” Strict Weak Ordering is defined as such: <code class="highlighter-rouge">if A is less than B, then B is not less than A</code>. Makes sense, and turns out to be crucial for <code class="highlighter-rouge">std::map</code> to function properly.</p>
+
+<p>Consider two <code class="highlighter-rouge">KeyType</code> objects. Pseudocode:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>KeyType A = KeyType ( 1, 0.0 );
+KeyType B = KeyType ( 0, 1.0 );
+</code></pre></div></div>
+
+<p>Using the <code class="highlighter-rouge">operator&lt;</code> I’ve defined above, think about <code class="highlighter-rouge">(A &lt; B)</code>. <code class="highlighter-rouge">A</code>’s <code class="highlighter-rouge">int</code> member is greater than <code class="highlighter-rouge">B</code>’s, but its <code class="highlighter-rouge">float</code> field is less than <code class="highlighter-rouge">B</code>’s, so <code class="highlighter-rouge">operator&lt;</code> returns <code class="highlighter-rouge">true</code>. However, by the same token, <code class="highlighter-rouge">(B &lt; A)</code> also returns <code class="highlighter-rouge">true</code>, because the <code class="highlighter-rouge">int</code> in <code class="highlighter-rouge">B</code> is less than that in <code class="highlighter-rouge">A</code>.</p>
+
+<p>Hence, <code class="highlighter-rouge">(A &lt; B)</code>, AND <code class="highlighter-rouge">(B &lt; A)</code>. This is mathematical nonsense, and it turns out, <code class="highlighter-rouge">std::map</code> doesn’t like it either. If I were a clickbait article, I might say, “<code class="highlighter-rouge">std::map</code> HATES this!” It breaks everything internally, including inserting things in the first place, so your map will end up inserting your stuff and then not being able to find it later.</p>
+
+<p>This is because my <code class="highlighter-rouge">operator&lt;</code> does not conform to Strict Weak Ordering. I was trying to squash a bug in my code for hours/days; thinking there was a bug in the library implementation of <code class="highlighter-rouge">std::map</code>, thinking the universe was playing a trick on me. The light bulb moment for me came when I thought about ordering words in a dictionary. Consider three words, “apple,” “Advil,” and “banana.” Which comes first, alphabetically?</p>
+
+<p>Using my <code class="highlighter-rouge">operator&lt;</code> shown above, the answer might be “banana,” because the second letter of “banana” (‘a’) comes before the second letter of “apple” or “Advil.” But everyone knows that’s wrong; you don’t even LOOK at the second letter until AFTER it’s clear that the first letters are the same. “Banana” gets discarded immediately; it’s between “apple” and “Advil,” which “Advil” wins because, even though the first letters are the same, the second letter ‘d’ comes before ‘p’.</p>
+
+<p>Implementing an <code class="highlighter-rouge">operator&lt;</code> that conforms to Strict Weak Ordering needs to follow the same logic. Pick the member with the greatest importance (it might not really matter), and let the comparison proceed to compare other fields IF AND ONLY IF the first fields are equal (like the first letters of “apple” and “Advil”).</p>
+
+<p>Here’s a corrected <code class="highlighter-rouge">operator&lt;</code>:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>bool operator&lt;(const KeyType&amp; lhs, const KeyType&amp; rhs) {
+    if ( lhs.data &lt; rhs.data )
+        return true;
+    if ( rhs.data &lt;lhs.data )
+        return false;
+    if ( lhs.otherData &lt; lhs.otherData )
+        return true;
+    return false;
+}
+</code></pre></div></div>
+
+<p>Verbose? Maybe. Correct? Finally. We look at the first <code class="highlighter-rouge">int</code> member of each, and compare them; we move on to comparing the <code class="highlighter-rouge">float</code> IF AND ONLY IF the <code class="highlighter-rouge">int</code>s are different.</p>
+
+<p>The above can be expanded ad infinitum, for any number of data members you’d like to compare to determine equivalence of keys. You can determine which members are important, and which aren’t–some might not even be included in the comparison. But you need to make sure that your <code class="highlighter-rouge">operator&lt;</code> is robust enough that it complies with Strict Weak Ordering. Otherwise operations like <code class="highlighter-rouge">std::map::find()</code> (as well as <code class="highlighter-rouge">std::set::find()</code>), <code class="highlighter-rouge">std::map::at()</code>, and others, will seemingly randomly fail, because the map doesn’t even know how to find what is inside itself, because it’s all mixed up.</p>
+
+<p>Sounds a bit like the human condition! This problem, however, we can definitively solve. So, do it.</p>
+
+<hr />
+
+<p>_Note from like 2.5 years later when trying to sort-of-revive this blog and going back and finding this post: _</p>
+
+<p>Don’t write your comparison operator like the above. The C++ standard library provides a function template called <code class="highlighter-rouge">std::tie</code> that will create a tuple of references (avoiding big copies or moves or whatever you’re afraid of), and <code class="highlighter-rouge">std::tuple</code>s implement lexicographical comparison right of the box:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>bool operator&lt;(const KeyType&amp; lhs, const KeyType&amp; rhs) { 
+   return std::tie(lhs.data, lhs.otherData) &lt; std::tie(rhs.data, rhs.otherData);
+}
+</code></pre></div></div>
+
+<p>And you’re done. Same semantics as the above, but harder to get wrong, easier to write and read, and one less thing to worry about in that short, sweet life of yours.</p>
+
+
+  </div><a class="u-url" href="/2016/07/04/duh-of-the-day-strict-weak-ordering.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Your awesome title</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">Your awesome title</li><li><a class="u-email" href="mailto:your-email@example.com">your-email@example.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/jekyll"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">jekyll</span></a></li><li><a href="https://www.twitter.com/jekyllrb"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">jekyllrb</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
