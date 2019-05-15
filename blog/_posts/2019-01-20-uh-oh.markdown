@@ -1,0 +1,52 @@
+---
+author: logan
+comments: true
+date: 2019-01-20 03:00:21+00:00
+excerpt: "\n\t\t\t\t\t\t"
+layout: post
+link: http://noisecode.net/blog/2019/01/20/uh-oh/
+slug: uh-oh
+title: "\n\t\t\t\tUh-oh\t\t"
+wordpress_id: 43
+---
+
+
+				
+
+
+I've decided to:
+
+
+
+
+
+
+
+  1. Actually kinda sorta use this blog
+  2. Take it in a technical direction
+
+
+
+
+
+
+I've got a pie-in-the-sky dream to learn more about graphics programming this year, something I've always been fascinated by, and have dabbled in quite a bit at work and in personal projects, but until now I've been too chicken to take the bull by the horns, become a Jedi Master, and mix metaphors.
+
+
+
+
+
+
+
+I also write C++ full-time at work, and am constantly learning new and interesting things about it. I've got a huge amount of interest in programming languages, old and new, and am engaged in an eternal Sisyphean struggle of starting and restarting a personal project of writing an interpreter/bytecode compiler/actual compiler/everything-under-the-sun for a scripting language I've designed. Coming soon. Or whatever.
+
+
+
+
+
+
+
+All that to say: this blog thing is gonna go great. Right?
+
+
+		
