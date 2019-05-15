@@ -3,6 +3,13 @@ author: logan
 comments: true
 layout: post
 title:  "A Zero-Overhead RAII Wrapper, Part III: Policy-Based Move"
+tags:
+- c++
+- metaprogramming
+- move semantics
+- move constructor
+- raii
+- template
 ---
 We left off last time with a nice zero-space-overhead class template for RAII-style management of resources without using the heap. The motivating example was wrapping OpenGL buffer handles, which need to be created and destroyed responsibly, in a wrapper class that would be as lightweight as if we carried out all of our doings using the integer handle directly. Unfortunately, at the end of last time, we realized our wrapper class suffers a massive shortcoming that integers do not: it can't be copied or moved. This is particularly devastating for the motivating example of an OpenGL buffer, which is something you'd probably like to create and keep around for a while--maybe stick in a data structure, give to your `Mesh` class as a member, etc. With the current can't-copy-or-move situation, you can't even get a buffer to survive a function return without putting it on the heap.
 
@@ -39,11 +46,11 @@ We still need to do the bookkeeping of keeping track whether or not we have been
         Movable() : _moved{false} {}
         Movable(Movable&& other) : Movable{} { other._moved = true; }
         Movable& operator=(Movable&& other) {
-        if (this != &other) {
-            this->_moved = false;
-            other._moved = true;
-        }
-        return *this;
+            if (this != &other) {
+                this->_moved = false;
+                other._moved = true;
+            }
+            return *this;
         }
 
         bool moved() const { return _moved; }
@@ -67,8 +74,8 @@ Our RAII wrapper now becomes:
     public:
         RAII(T t) : pair{std::move(t)} {}
         ~RAII() {
-        if (!MovePolicy::moved())
-            pair.second()(pair.first());
+            if (!MovePolicy::moved())
+                pair.second()(pair.first());
         }
 
         T& get() noexcept { return pair.first(); }
